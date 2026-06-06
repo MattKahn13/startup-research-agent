@@ -3077,6 +3077,42 @@ def run_scrape_only_pass(url_queue, page_cache, max_urls: int = 20):
             log.warning("scrape_only pass: %s -> %s", url, e)
 
 
+def run_backlog_pass(db, output_dir) -> None:
+    """Level 4: zero Gemini, zero Selenium. Local CPU work on the existing DB."""
+    log.info("backlog pass starting: %d records", len(db.records))
+    updated = 0
+    for rec in db.records.values():
+        before_tier = rec.get("validation_tier")
+        # validate_record mutates the dict in place and updates validation_tier
+        validate_record(rec)
+        if rec.get("validation_tier") != before_tier:
+            updated += 1
+    db.save()
+    log.info("backlog pass: re-validated %d records, %d tier changes", len(db.records), updated)
+
+    # Recompute gap report
+    try:
+        report = db.gap_report()
+        out_dir = Path(output_dir) if not isinstance(output_dir, Path) else output_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "gap_report.json").write_text(json.dumps(report, indent=2))
+    except Exception as e:
+        log.warning("backlog pass: gap_report failed: %s", e)
+
+    # Health report: flag records that look like re-extraction candidates
+    try:
+        candidates = [r for r in db.records.values()
+                      if r.get("validation_tier") == "weak"
+                      and r.get("proof_url")]
+        out_dir = Path(output_dir) if not isinstance(output_dir, Path) else output_dir
+        (out_dir / "health_report.json").write_text(json.dumps({
+            "weak_records_with_proof_url": len(candidates),
+            "ids": [c.get("company_name", "<unknown>") for c in candidates[:200]],
+        }, indent=2))
+    except Exception as e:
+        log.warning("backlog pass: health_report failed: %s", e)
+
+
 def run(
     prompt: str = DEFAULT_PROMPT,
     headless: bool = False,
@@ -3250,9 +3286,11 @@ def run(
                     save_checkpoint(state)
                     break
                 if ladder.level == Level.BACKLOG:
-                    # B9 will provide a local-CPU work pass here.
-                    log.warning("Ladder at BACKLOG level; B9 will provide "
-                                "local-CPU work. Skipping round.")
+                    log.warning("Ladder at BACKLOG level; running local-CPU backlog pass.")
+                    try:
+                        run_backlog_pass(db, output_dir)
+                    except Exception as e:
+                        log.exception("backlog pass crashed: %s", e)
                     time.sleep(min(cooldown_secs, COOLDOWN_MAX_SECS))
                     continue
                 if ladder.level == Level.SCRAPE_ONLY:
