@@ -49,9 +49,14 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from queue import Queue, Empty
 from typing import Optional
 from urllib.parse import quote_plus, urlparse
+
+from metrics import gemini_call, GeminiCallLog, CallOutcome
+
+_GEMINI_CALL_LOG = GeminiCallLog(Path("startup_output/gemini_calls.jsonl"))
 
 from bs4 import BeautifulSoup
 
@@ -761,6 +766,24 @@ def stop_gemini():
             pass
         _gemini = None
 
+class GeminiUnavailable(RuntimeError):
+    """Raised when Gemini fails persistently and the caller should give up."""
+    pass
+
+
+def _looks_like_prompt_echo(response: str, prompt: str) -> bool:
+    """Detect when the response is just a regurgitation of the prompt.
+
+    The wait loop sometimes captures the user prompt instead of the model reply.
+    The last 200 chars of the prompt include the end-of-prompt marker; if that
+    tail appears in the response, it's almost certainly an echo.
+    """
+    if not response or len(response) < 20:
+        return False
+    tail = prompt[-200:].strip()
+    return bool(tail) and tail in response
+
+
 def call_gemini(prompt: str, label: str = "Gemini") -> str:
     """Send `prompt` to the persistent Gemini session.
 
@@ -770,33 +793,79 @@ def call_gemini(prompt: str, label: str = "Gemini") -> str:
     case — no caller should ever crash because this function returned ""
     instead of raising. (Earlier behaviour was to raise RuntimeError on
     empty, which killed long perpetual runs in the middle of the night.)
+
+    Every call now records a structured outcome (parsed / empty /
+    prompt_echoed / timeout / crash) to startup_output/gemini_calls.jsonl
+    via the metrics.gemini_call context manager.
     """
     global _gemini
     if _gemini is None:
         log.warning("Gemini session not started; cannot call.")
         return ""
     UI.action(f"Calling {label} ({len(prompt):,} chars) …")
-    try:
-        out = _gemini.prompt(prompt)
-        if out:
-            return out
-        UI.warn(f"  Gemini returned empty response. Restarting session …")
-    except Exception as exc:
-        UI.warn(f"  Gemini call raised {type(exc).__name__}: {exc!r}. "
-                f"Restarting session …")
-    # Single restart attempt
-    try:
+
+    def _attempt(p: str, call) -> tuple[str, bool]:
+        """Run one prompt attempt; returns (response, should_return_directly).
+
+        Sets the outcome on `call` and returns the value to return from
+        call_gemini. The second tuple element is True if this is a definitive
+        answer (parsed / empty / echo) and False if we should restart and retry.
+        """
         try:
-            _gemini.stop()
-        except Exception:
-            pass
-        _gemini = GeminiSession(**_gemini_init_kwargs)
-        _gemini.start()
-        out = _gemini.prompt(prompt)
-        return out or ""
-    except Exception as exc:
-        log.error(f"  Gemini restart failed: {exc!r}; returning empty.")
+            out = _gemini.prompt(p)
+        except TimeoutException:
+            call.set_outcome(CallOutcome.TIMEOUT)
+            raise GeminiUnavailable("timeout")
+        strategy = getattr(_gemini, "last_extractor_strategy", None)
+        call.set_response(out or "", strategy=strategy)
+        if not out:
+            call.set_outcome(CallOutcome.EMPTY)
+            return "", False  # signal: needs restart attempt
+        if _looks_like_prompt_echo(out, p):
+            call.set_outcome(CallOutcome.PROMPT_ECHOED)
+            return "", True
+        call.set_outcome(CallOutcome.PARSED)
+        return out, True
+
+    try:
+        with gemini_call(_GEMINI_CALL_LOG, label=label, prompt=prompt) as call:
+            try:
+                out, definitive = _attempt(prompt, call)
+                if definitive:
+                    return out
+                UI.warn("  Gemini returned empty response. Restarting session …")
+            except GeminiUnavailable:
+                raise
+            except Exception as exc:
+                UI.warn(f"  Gemini call raised {type(exc).__name__}: {exc!r}. "
+                        f"Restarting session …")
+                # context manager will set CRASH on raise; we want to retry
+                # via restart, so handle here instead of propagating.
+
+        # Single restart attempt (logged as its own gemini_call entry).
+        try:
+            try:
+                _gemini.stop()
+            except Exception:
+                pass
+            _gemini = GeminiSession(**_gemini_init_kwargs)
+            _gemini.start()
+        except Exception as exc:
+            log.error(f"  Gemini restart failed: {exc!r}; returning empty.")
+            return ""
+
+        with gemini_call(_GEMINI_CALL_LOG, label=f"{label} (retry)", prompt=prompt) as call:
+            try:
+                out, _definitive = _attempt(prompt, call)
+                return out
+            except GeminiUnavailable:
+                raise
+    except GeminiUnavailable:
+        raise
+    except Exception:
+        log.exception("call_gemini crashed")
         return ""
+    return ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
