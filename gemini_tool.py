@@ -1254,6 +1254,9 @@ def send_prompt(driver: uc.Chrome, prompt: str, files: list[str] = None,
 
     last_error = None
 
+    # TODO: migrate to retry_policy.retry (currently tangled with driver.get()
+    # reset between attempts; see retry_policy.py for bounded backoff + jitter
+    # + error classification)
     for attempt in range(max_retries + 1):
         try:
             return _send_prompt_inner(driver, prompt, files)

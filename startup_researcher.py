@@ -1419,6 +1419,9 @@ def scrape_page(driver, url: str, cache) -> tuple[str, str]:
             _rm_record_selenium(_h)
 
     # Selenium path: required for JS-heavy sites or when HTTP failed
+    # TODO: migrate to retry_policy.retry (currently tangled with HTTP-fallback
+    # and selenium-handle side effects; see retry_policy.py for bounded
+    # backoff + jitter + error classification)
     with selenium_fetch(_SELENIUM_LOG, url=url, path="selenium") as _h:
         for attempt in range(MAX_RETRIES):
             try:
