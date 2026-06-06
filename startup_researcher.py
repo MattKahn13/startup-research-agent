@@ -1808,8 +1808,9 @@ class StartupDB:
     Records are keyed by normalised company name for dedup.
     """
 
-    def __init__(self, path: str):
-        self.path = path
+    def __init__(self, path, conflict_log=None):
+        self.path = str(path)
+        self.conflict_log = Path(conflict_log) if conflict_log else Path(self.path).parent / "merge_conflicts.jsonl"
         self.records: dict[str, dict] = {}  # norm_name → record
         self._load()
 
@@ -1869,10 +1870,79 @@ class StartupDB:
         log.error(f"  db.save FAILED after 5 retries; data remains in memory. "
                   f"Last error: {last_err!r}")
 
-    def upsert(self, record: dict) -> bool:
-        """Insert or merge a record. Returns True if record was new.
-        Rejects records that match the non-startup blocklist or that fail
-        the hard validation rule (must have a Cornellian founder)."""
+    def _log_conflict(self, key, field, old_v, new_v):
+        self.conflict_log.parent.mkdir(parents=True, exist_ok=True)
+        with self.conflict_log.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "record": key, "field": field,
+                "kept": old_v, "rejected": new_v,
+            }) + "\n")
+
+    def upsert(self, record) -> bool:
+        """Insert or merge a record. Accepts StartupRecord (Pydantic) or dict (legacy).
+
+        For Pydantic StartupRecord: unions list fields (cornellians by name,
+        validation_issues, tags, non_cornell_cofounder_schools), fills missing
+        scalars, logs conflicts when both populated and differ.
+
+        For dict (legacy): preserves old behavior, including blocklist gate and
+        hard rule that requires a cornellian_founder.
+
+        Returns True if record was new."""
+        # ── Pydantic StartupRecord branch ─────────────────────────────────
+        if hasattr(record, "model_dump"):
+            new = record.model_dump(mode="json")
+            name = (record.company_name or "").strip()
+            if not name:
+                return False
+            key = _normalise_name(name)
+            if not key:
+                return False
+
+            now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            if key not in self.records:
+                new["first_seen_at"] = new.get("first_seen_at") or now
+                new["last_verified_at"] = now
+                self.records[key] = new
+                return True
+
+            existing = self.records[key]
+            existing["last_verified_at"] = now
+
+            # List fields: union and dedupe
+            for field in ("validation_issues", "tags", "non_cornell_cofounder_schools"):
+                merged_list, seen = [], set()
+                for x in (existing.get(field) or []) + (new.get(field) or []):
+                    if x and x not in seen:
+                        merged_list.append(x); seen.add(x)
+                existing[field] = merged_list
+
+            # Cornellians: union by name
+            existing_corn = {c["name"]: c for c in existing.get("cornellians", []) if isinstance(c, dict) and c.get("name")}
+            for c in new.get("cornellians", []):
+                if isinstance(c, dict) and c.get("name"):
+                    existing_corn.setdefault(c["name"], c)
+            existing["cornellians"] = list(existing_corn.values())
+
+            # Scalars: fill if missing; log conflicts if both populated and differ
+            scalar_fields = (
+                "description", "industry", "funding_total_usd", "funding_stage",
+                "funding_last_round_year", "founded_year", "employee_count",
+                "is_public", "headquarters", "status", "exit_year", "acquirer",
+                "acquisition_amount_usd", "website_url", "linkedin_company_url",
+                "crunchbase_url",
+            )
+            for field in scalar_fields:
+                old_v, new_v = existing.get(field), new.get(field)
+                if old_v in (None, "", "unknown") and new_v not in (None, "", "unknown"):
+                    existing[field] = new_v
+                elif old_v and new_v and old_v != new_v and old_v != "unknown" and new_v != "unknown":
+                    self._log_conflict(key, field, old_v, new_v)
+                    # Keep old
+            return False
+
+        # ── Legacy dict branch (preserves old behavior) ───────────────────
         name = record.get("company_name", "").strip()
         if not name:
             return False
