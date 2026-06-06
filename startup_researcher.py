@@ -562,6 +562,12 @@ class PageCache:
     def __len__(self) -> int:
         return len(self._mem)
 
+    def list_keys(self) -> list[str]:
+        """Return the stable cache keys (filename stems) of all on-disk entries."""
+        if not os.path.exists(self._dir):
+            return []
+        return [os.path.splitext(f)[0] for f in os.listdir(self._dir) if f.endswith(".txt")]
+
     def get(self, url: str) -> str | None:
         return self._mem.get(url)
 
@@ -1801,14 +1807,31 @@ def load_checkpoint() -> dict:
     if os.path.exists(CHECKPOINT_FILE):
         try:
             with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                saved = json.load(f)
         except Exception:
-            pass
+            return {}
+        # Backward-compat: older checkpoints lack these fields.
+        if "visited_urls" not in saved:
+            saved["visited_urls"] = []
+        if "cache_manifest" not in saved:
+            saved["cache_manifest"] = []
+        return saved
     return {}
 
-def save_checkpoint(state: dict):
+def save_checkpoint(state: dict, page_cache=None):
+    # Normalize visited_urls: callers may pass a set or a list.
+    vu = state.get("visited_urls", [])
+    if isinstance(vu, set):
+        vu = sorted(vu)
+    payload = dict(state)
+    payload["visited_urls"] = vu
+    if page_cache is not None and hasattr(page_cache, "list_keys"):
+        payload["cache_manifest"] = sorted(page_cache.list_keys())
+    else:
+        # Preserve any pre-existing manifest the caller stuffed into state.
+        payload["cache_manifest"] = sorted(state.get("cache_manifest", []))
     with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3137,10 +3160,16 @@ def run(
     state = load_checkpoint() if resume else {}
 
     visited_urls: set[str] = set(state.get("visited_urls", []))
+    cache_manifest: set[str] = set(state.get("cache_manifest", []))
     queries_used: list[str] = state.get("queries_used", [])
     round_num: int           = state.get("round", 0)
     plan: dict | None        = state.get("plan")
     page_cache = PageCache(output_dir)  # file-backed; survives restarts
+    if cache_manifest:
+        on_disk = set(page_cache.list_keys())
+        missing = cache_manifest - on_disk
+        if missing:
+            print(f"  {UI.DIM}Cache manifest: {len(missing)} entries listed in checkpoint are no longer on disk{UI.RESET}")
 
     # ── Banner ────────────────────────────────────────────────────────────
     UI.banner("STARTUP RESEARCHER")
@@ -3172,7 +3201,7 @@ def run(
                 print(f"    {p_icon} {s['name']} — {len(s.get('queries', []))} queries")
 
             state["plan"] = plan
-            save_checkpoint(state)
+            save_checkpoint(state, page_cache=page_cache)
         else:
             UI.phase("PHASE 1 — PLAN (loaded from checkpoint)")
             for s in plan.get("strategies", []):
@@ -3242,7 +3271,7 @@ def run(
                     "queries_used": queries_used,
                     "plan": plan, "complete": False,
                 })
-                save_checkpoint(state)
+                save_checkpoint(state, page_cache=page_cache)
 
                 # Write intermediate outputs
                 write_outputs(db, output_dir, prompt)
@@ -3283,7 +3312,7 @@ def run(
                         "queries_used": queries_used,
                         "plan": plan, "complete": False,
                     })
-                    save_checkpoint(state)
+                    save_checkpoint(state, page_cache=page_cache)
                     break
                 if ladder.level == Level.BACKLOG:
                     log.warning("Ladder at BACKLOG level; running local-CPU backlog pass.")
@@ -3394,7 +3423,7 @@ def run(
                     "queries_used": queries_used,
                     "plan": plan, "complete": False,
                 })
-                save_checkpoint(state)
+                save_checkpoint(state, page_cache=page_cache)
 
                 # ── Inline Gemini verify (every N rounds) ─────────────────
                 if round_num % INLINE_GEMINI_VERIFY_INTERVAL == 0:
@@ -3476,7 +3505,7 @@ def run(
             "queries_used": queries_used,
             "plan": plan, "complete": False,
         })
-        save_checkpoint(state)
+        save_checkpoint(state, page_cache=page_cache)
 
         paths = write_outputs(db, output_dir, prompt)
         gap = db.gap_report()
