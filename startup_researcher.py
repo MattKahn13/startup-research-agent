@@ -54,11 +54,20 @@ from queue import Queue, Empty
 from typing import Optional
 from urllib.parse import quote_plus, urlparse
 
-from metrics import gemini_call, GeminiCallLog, CallOutcome, selenium_fetch, SeleniumFetchLog
+from metrics import gemini_call, GeminiCallLog, CallOutcome, selenium_fetch, SeleniumFetchLog, RoundMetrics
 
 _SELENIUM_LOG = SeleniumFetchLog(Path("startup_output/selenium_fetches.jsonl"))
 
 _GEMINI_CALL_LOG = GeminiCallLog(Path("startup_output/gemini_calls.jsonl"))
+
+_ROUND_METRICS_HOLDER = {"rm": None}
+def _current_round_metrics():
+    return _ROUND_METRICS_HOLDER["rm"]
+
+def _rm_record_selenium(handle):
+    _rm = _current_round_metrics()
+    if _rm is not None:
+        _rm.record_selenium(handle.outcome, latency_ms=0)
 
 from bs4 import BeautifulSoup
 
@@ -817,16 +826,28 @@ def call_gemini(prompt: str, label: str = "Gemini") -> str:
             out = _gemini.prompt(p)
         except TimeoutException:
             call.set_outcome(CallOutcome.TIMEOUT)
+            _rm = _current_round_metrics()
+            if _rm is not None:
+                _rm.record_gemini(call.outcome, latency_ms=0, label=label)
             raise GeminiUnavailable("timeout")
         strategy = getattr(_gemini, "last_extractor_strategy", None)
         call.set_response(out or "", strategy=strategy)
         if not out:
             call.set_outcome(CallOutcome.EMPTY)
+            _rm = _current_round_metrics()
+            if _rm is not None:
+                _rm.record_gemini(call.outcome, latency_ms=0, label=label)
             return "", False  # signal: needs restart attempt
         if _looks_like_prompt_echo(out, p):
             call.set_outcome(CallOutcome.PROMPT_ECHOED)
+            _rm = _current_round_metrics()
+            if _rm is not None:
+                _rm.record_gemini(call.outcome, latency_ms=0, label=label)
             return "", True
         call.set_outcome(CallOutcome.PARSED)
+        _rm = _current_round_metrics()
+        if _rm is not None:
+            _rm.record_gemini(call.outcome, latency_ms=0, label=label)
         return out, True
 
     try:
@@ -1355,6 +1376,7 @@ def scrape_page(driver, url: str, cache) -> tuple[str, str]:
         with selenium_fetch(_SELENIUM_LOG, url=url, path="cache") as _h:
             cached_text = cache[url]
             _h.set_result(chars=len(cached_text), outcome="ok")
+            _rm_record_selenium(_h)
             return cached_text, "ok"
 
     domain = urlparse(url).netloc.lower()
@@ -1366,12 +1388,14 @@ def scrape_page(driver, url: str, cache) -> tuple[str, str]:
             if status == "ok":
                 cache[url] = text
                 _h.set_result(chars=len(text), outcome="ok")
+                _rm_record_selenium(_h)
                 return text, "ok"
             # "empty", "blocked", "error" — fall through to Selenium for a second
             # chance. Static pages sometimes return empty body to plain requests
             # but render full content under a real browser (anti-bot defences).
             _http_outcome = "empty" if status == "empty" else ("blocked" if status == "blocked" else "crash")
             _h.set_result(chars=len(text or ""), outcome=_http_outcome)
+            _rm_record_selenium(_h)
 
     # Selenium path: required for JS-heavy sites or when HTTP failed
     with selenium_fetch(_SELENIUM_LOG, url=url, path="selenium") as _h:
@@ -1389,6 +1413,7 @@ def scrape_page(driver, url: str, cache) -> tuple[str, str]:
                 if status == "ok":
                     cache[url] = text
                     _h.set_result(chars=len(text), outcome="ok")
+                    _rm_record_selenium(_h)
                     return text, status
                 # Still empty — give it one more chance with a longer settle window
                 # before declaring the page truly empty.
@@ -1399,18 +1424,23 @@ def scrape_page(driver, url: str, cache) -> tuple[str, str]:
                     if status == "ok":
                         cache[url] = text
                         _h.set_result(chars=len(text), outcome="ok")
+                        _rm_record_selenium(_h)
                         return text, status
                 _h.set_result(chars=len(text or ""), outcome="empty" if status == "empty" else status)
+                _rm_record_selenium(_h)
                 return text, status
             except (TimeoutException, WebDriverException):
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(3)
                 else:
                     _h.set_result(chars=0, outcome="timeout")
+                    _rm_record_selenium(_h)
             except Exception:
                 _h.set_result(chars=0, outcome="crash")
+                _rm_record_selenium(_h)
                 break
         _h.set_result(chars=0, outcome="empty")
+        _rm_record_selenium(_h)
         return "", "error"
 
 
@@ -3092,6 +3122,8 @@ def run(
             # ══════════════════════════════════════════════════════════════
             if round_num == 0:
                 round_num = 1
+                rm = RoundMetrics(round_number=round_num)
+                _ROUND_METRICS_HOLDER["rm"] = rm
                 UI.phase(f"ROUND {round_num} — INITIAL SWEEP")
 
                 # Convert plan strategies to actions format
@@ -3130,6 +3162,15 @@ def run(
                 # Write intermediate outputs
                 write_outputs(db, output_dir, prompt)
 
+                # Round metrics summary
+                rm.record_db(new_records=new, merged=0, rejected=0)
+                print(rm.summary_text())
+                import json as _json_for_rm
+                _metrics_path = Path(output_dir) / "round_metrics.jsonl"
+                _metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                with _metrics_path.open("a", encoding="utf-8") as _f:
+                    _f.write(_json_for_rm.dumps(rm.to_dict()) + "\n")
+
             # ══════════════════════════════════════════════════════════════
             #  PERPETUAL LOOP — gap-filling with cooldown
             # ══════════════════════════════════════════════════════════════
@@ -3143,6 +3184,8 @@ def run(
                     break
 
                 round_num += 1
+                rm = RoundMetrics(round_number=round_num)
+                _ROUND_METRICS_HOLDER["rm"] = rm
 
                 # Memory management
                 if pages_since_restart > RESTART_EVERY:
@@ -3219,6 +3262,7 @@ def run(
                     UI.found(f"Round {round_num}: +{new} new records "
                              f"(DB total: {db.count()})")
                     db.save()
+                    rm.record_db(new_records=new, merged=0, rejected=0)
 
                     if new > 0:
                         consecutive_dry = 0
@@ -3276,6 +3320,17 @@ def run(
 
                 # Write outputs every round
                 write_outputs(db, output_dir, prompt)
+
+                # ── Round metrics summary ─────────────────────────────────
+                try:
+                    print(rm.summary_text())
+                    import json as _json_for_rm
+                    _metrics_path = Path(output_dir) / "round_metrics.jsonl"
+                    _metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                    with _metrics_path.open("a", encoding="utf-8") as _f:
+                        _f.write(_json_for_rm.dumps(rm.to_dict()) + "\n")
+                except Exception:
+                    log.exception("Failed to write round metrics")
 
                 # ── Cooldown on dry rounds ────────────────────────────────
                 if consecutive_dry > 0:

@@ -64,3 +64,20 @@ def test_selenium_fetch_records(tmp_path):
     assert rec["path"] == "http"
     assert rec["outcome"] == "ok"
     assert rec["chars"] == 4200
+
+from metrics import RoundMetrics
+
+def test_round_metrics_summary():
+    rm = RoundMetrics(round_number=14)
+    for _ in range(31): rm.record_gemini(CallOutcome.PARSED, latency_ms=24000, label="extract_chunk")
+    for _ in range(4):  rm.record_gemini(CallOutcome.PROMPT_ECHOED, latency_ms=1000, label="extract_chunk")
+    for _ in range(2):  rm.record_gemini(CallOutcome.EMPTY, latency_ms=1000, label="extract_chunk")
+    rm.record_gemini(CallOutcome.CRASH, latency_ms=500, label="extract_chunk")
+    rm.record_selenium("ok", 3100); rm.record_selenium("empty", 4000)
+    rm.record_db(new_records=47, merged=12, rejected=8)
+    summary = rm.summary_text()
+    assert "Round 14" in summary
+    assert "38 Gemini calls" in summary
+    assert "31 parsed" in summary
+    assert "82%" in summary
+    assert "47" in summary
