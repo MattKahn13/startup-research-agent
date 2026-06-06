@@ -64,10 +64,17 @@ _ROUND_METRICS_HOLDER = {"rm": None}
 def _current_round_metrics():
     return _ROUND_METRICS_HOLDER["rm"]
 
+from degradation import DegradationLadder, Level
+_LADDER_HOLDER = {"ladder": None}
+def _ladder():
+    return _LADDER_HOLDER["ladder"]
+
 def _rm_record_selenium(handle):
     _rm = _current_round_metrics()
     if _rm is not None:
         _rm.record_selenium(handle.outcome, latency_ms=0)
+    if _ladder() is not None:
+        _ladder().observe_selenium(handle.outcome)
 
 from bs4 import BeautifulSoup
 
@@ -829,6 +836,8 @@ def call_gemini(prompt: str, label: str = "Gemini") -> str:
             _rm = _current_round_metrics()
             if _rm is not None:
                 _rm.record_gemini(call.outcome, latency_ms=0, label=label)
+            if _ladder() is not None:
+                _ladder().observe_gemini(call.outcome)
             raise GeminiUnavailable("timeout")
         strategy = getattr(_gemini, "last_extractor_strategy", None)
         call.set_response(out or "", strategy=strategy)
@@ -837,17 +846,23 @@ def call_gemini(prompt: str, label: str = "Gemini") -> str:
             _rm = _current_round_metrics()
             if _rm is not None:
                 _rm.record_gemini(call.outcome, latency_ms=0, label=label)
+            if _ladder() is not None:
+                _ladder().observe_gemini(call.outcome)
             return "", False  # signal: needs restart attempt
         if _looks_like_prompt_echo(out, p):
             call.set_outcome(CallOutcome.PROMPT_ECHOED)
             _rm = _current_round_metrics()
             if _rm is not None:
                 _rm.record_gemini(call.outcome, latency_ms=0, label=label)
+            if _ladder() is not None:
+                _ladder().observe_gemini(call.outcome)
             return "", True
         call.set_outcome(CallOutcome.PARSED)
         _rm = _current_round_metrics()
         if _rm is not None:
             _rm.record_gemini(call.outcome, latency_ms=0, label=label)
+        if _ladder() is not None:
+            _ladder().observe_gemini(call.outcome)
         return out, True
 
     try:
@@ -1935,6 +1950,12 @@ def _extract_startups_chunk(
     total_chunks: int = 1,
 ) -> list[dict]:
     """Extract records from a single chunk of page text."""
+
+    # B8: Degradation ladder short-circuit. At SCRAPE_ONLY or worse we skip
+    # extraction entirely; A9 will add the level-2 (DEMOTED) two-pass path.
+    level = _ladder().level if _ladder() else Level.NORMAL
+    if level >= Level.SCRAPE_ONLY:
+        return []
 
     chunk_note = (f"\n    (CHUNK {chunk_idx+1} of {total_chunks} from this page)"
                   if total_chunks > 1 else "")
@@ -3032,6 +3053,30 @@ def inspect(output_dir: str = OUTPUT_DIR):
 #  MAIN ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════════════════
 
+def run_scrape_only_pass(url_queue, page_cache, max_urls: int = 20):
+    """Level 3 (SCRAPE_ONLY): scrape and cache pages, do not extract.
+
+    Best-effort wiring -- the main round loop does not currently maintain a
+    standing url_queue, so this is a no-op when called from the perpetual
+    loop. Real wiring will land alongside future queue refactoring.
+    """
+    import queue as _queue
+    if url_queue is None:
+        log.info("scrape_only pass: no url_queue available, nothing to do")
+        return
+    for _ in range(max_urls):
+        try:
+            url = url_queue.get_nowait()
+        except _queue.Empty:
+            return
+        try:
+            text = scrape_page(url)
+            if text and page_cache is not None:
+                page_cache[url] = text
+        except Exception as e:
+            log.warning("scrape_only pass: %s -> %s", url, e)
+
+
 def run(
     prompt: str = DEFAULT_PROMPT,
     headless: bool = False,
@@ -3043,6 +3088,10 @@ def run(
 ):
     started_at = datetime.now()
     os.makedirs(output_dir, exist_ok=True)
+
+    # B8: Degradation ladder, observed by call_gemini / scrape_page wrappers.
+    ladder = DegradationLadder()
+    _LADDER_HOLDER["ladder"] = ladder
 
     # ── Database ──────────────────────────────────────────────────────────
     db_path = os.path.join(output_dir, "startups_db.json")
@@ -3186,6 +3235,32 @@ def run(
                 round_num += 1
                 rm = RoundMetrics(round_number=round_num)
                 _ROUND_METRICS_HOLDER["rm"] = rm
+
+                # ── B8: Degradation ladder gating ─────────────────────────
+                ladder.tick()
+                if ladder.level == Level.HARD_STOP:
+                    log.error("Degradation ladder reached HARD_STOP. "
+                              "Saving state and exiting.")
+                    state.update({
+                        "prompt": prompt, "round": round_num,
+                        "visited_urls": list(visited_urls),
+                        "queries_used": queries_used,
+                        "plan": plan, "complete": False,
+                    })
+                    save_checkpoint(state)
+                    break
+                if ladder.level == Level.BACKLOG:
+                    # B9 will provide a local-CPU work pass here.
+                    log.warning("Ladder at BACKLOG level; B9 will provide "
+                                "local-CPU work. Skipping round.")
+                    time.sleep(min(cooldown_secs, COOLDOWN_MAX_SECS))
+                    continue
+                if ladder.level == Level.SCRAPE_ONLY:
+                    log.warning("Ladder at SCRAPE_ONLY; running scrape-only pass.")
+                    run_scrape_only_pass(
+                        url_queue=None, page_cache=page_cache, max_urls=20,
+                    )
+                    continue
 
                 # Memory management
                 if pages_since_restart > RESTART_EVERY:
