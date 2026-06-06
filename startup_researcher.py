@@ -1646,6 +1646,77 @@ def _extract_pass1(page_text: str, source_url: str) -> list[StartupRecord]:
     return out
 
 
+def _build_pass2_prompt(record: StartupRecord, page_text: str) -> str | None:
+    """Return None if no pass-2 fields are warranted for this record."""
+    asks: list[str] = []
+    if record.status == "acquired":
+        asks.append("exit_year (int or null)")
+        asks.append("acquirer (string or null)")
+        asks.append("acquisition_amount_usd (int or null; coerce $1.2B -> 1200000000)")
+    if record.funding_total_usd is not None and record.funding_total_usd > 0:
+        asks.append("funding_stage (pre-seed|seed|series-a|...|growth|public|unknown)")
+        asks.append("funding_last_round_year (int or null)")
+    if len(record.cornellians) > 1 or len([c for c in record.cornellians
+                                            if c.role_at_company in ("founder", "cofounder")]) > 1:
+        asks.append("non_cornell_cofounder_schools (list of strings, the other founders' universities)")
+    # Always potentially valuable when the source page is the company's about page
+    asks.append("description (one sentence)")
+    asks.append("industry (string)")
+    asks.append("tags (list of short classifier strings)")
+    asks.append("headquarters (string)")
+    asks.append("website_url (string or null)")
+    asks.append("linkedin_company_url (string or null, only if stated in text)")
+    asks.append("crunchbase_url (string or null, only if stated in text)")
+    asks.append("employee_count (int or null)")
+    asks.append("founded_year (int or null, if not already known)")
+    if not asks:
+        return None
+    return (
+        "Read the text below and return ONLY the following fields for the company named "
+        f"\"{record.company_name}\". Use the text only -- do not recall or estimate.\n\n"
+        f"Fields requested:\n- " + "\n- ".join(asks)
+        + "\n\nFor every non-null value include `<field>_evidence_span` as a substring of the text.\n"
+        + "Output one ```json fenced block, schema: {\"company_name\": ..., ...}.\n\n"
+        + "TEXT:\n" + page_text
+        + f"\n\n{_END_OF_PROMPT_MARKER}\n```json\n"
+    )
+
+
+def _extract_pass2(record: StartupRecord, page_text: str) -> StartupRecord:
+    prompt = _build_pass2_prompt(record, page_text)
+    if prompt is None:
+        return record
+    response = call_gemini(prompt, label="extract_pass2")
+    try:
+        cleaned = _slice_and_unfence(response)
+        data = json.loads(cleaned)
+    except (ValueError, json.JSONDecodeError):
+        return record
+
+    for field, value in data.items():
+        if field.endswith("_evidence_span"):
+            continue
+        if field == "company_name":
+            continue
+        if value is None or value == "":
+            continue
+        span_field = f"{field}_evidence_span"
+        span = data.get(span_field)
+        if span and not span_present(span, page_text):
+            continue
+        try:
+            setattr(record, field, value)
+        except (AttributeError, ValidationError):
+            continue
+    return record
+
+
+def _slice_and_unfence(text: str) -> str:
+    sliced = text.rsplit(_END_OF_PROMPT_MARKER, 1)[1] if _END_OF_PROMPT_MARKER in text else text
+    fences = _FENCE_RE.findall(sliced)
+    return max(fences, key=len) if fences else sliced.strip()
+
+
 def _parse_json(raw: str, fallback=None):
     cleaned = _clean_json(raw)
     try:
