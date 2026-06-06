@@ -16,3 +16,4 @@ round_metrics.jsonl
 merge_conflicts.jsonl
 reextract_*.jsonl
 startups_db_v2.json
+gemini-code-*.py
