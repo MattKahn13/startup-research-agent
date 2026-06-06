@@ -51,7 +51,9 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Optional
+from typing import Optional, Type, TypeVar
+
+from pydantic import BaseModel, ValidationError
 from urllib.parse import quote_plus, urlparse
 
 from metrics import gemini_call, GeminiCallLog, CallOutcome, selenium_fetch, SeleniumFetchLog, RoundMetrics
@@ -1516,6 +1518,55 @@ def _clean_json(raw: str) -> str:
     return text.strip()
 
 _PARSE_FAIL_LOG_PATH: str = "gemini_parse_failures.log"
+
+_T = TypeVar("_T", bound=BaseModel)
+
+
+def _parse_json_typed(text: str, model_cls: Type[_T]) -> tuple[Optional[_T], str]:
+    """Returns (model_instance, outcome_string).
+
+    outcome in {"parsed", "fence_extracted", "marker_sliced", "schema_invalid", "empty"}
+    """
+    if not text or not text.strip():
+        return None, "empty"
+
+    # Marker slice
+    sliced = text
+    outcome = "parsed"
+    if _END_OF_PROMPT_MARKER in text:
+        sliced = text.rsplit(_END_OF_PROMPT_MARKER, 1)[1]
+        outcome = "marker_sliced"
+
+    # Fence extract -- take the LARGEST fenced json block first
+    fences = _FENCE_RE.findall(sliced)
+    candidates = sorted(fences, key=len, reverse=True) if fences else []
+    if candidates:
+        outcome = "fence_extracted" if outcome == "parsed" else outcome
+        for cand in candidates:
+            try:
+                return model_cls.model_validate_json(cand.strip()), outcome
+            except (ValidationError, ValueError):
+                continue
+
+    # Try the raw sliced text
+    try:
+        return model_cls.model_validate_json(sliced.strip()), outcome
+    except (ValidationError, ValueError) as e:
+        _log_parse_failure(text, model_cls, e)
+        return None, "schema_invalid"
+
+
+def _log_parse_failure(text: str, model_cls, exc) -> None:
+    failure_log = Path("startup_output") / "gemini_parse_failures.log"
+    failure_log.parent.mkdir(parents=True, exist_ok=True)
+    with failure_log.open("a", encoding="utf-8") as f:
+        f.write(f"=== {datetime.utcnow().isoformat()} | {model_cls.__name__} ===\n")
+        f.write(f"error: {exc}\n")
+        f.write(f"raw_len={len(text)} has_marker={_END_OF_PROMPT_MARKER in text} ")
+        f.write(f"has_fence={'```json' in text}\n")
+        f.write(text[:8000])
+        f.write("\n=== END ===\n\n")
+
 
 def _parse_json(raw: str, fallback=None):
     cleaned = _clean_json(raw)

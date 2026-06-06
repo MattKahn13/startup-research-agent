@@ -1,0 +1,7 @@
+Here is the structured output you requested:
+
+```json
+{"records": [], "notes": "no startups on this page"}
+```
+
+Let me know if you need anything else.

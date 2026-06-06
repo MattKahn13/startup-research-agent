@@ -1,0 +1,3 @@
+Extract startups from the text below. From the text below, extract ...
+<<<__GEMINI_RESPONSE_BELOW__>>>
+(empty)
