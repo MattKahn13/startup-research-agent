@@ -1904,6 +1904,11 @@ class StartupDB:
             if key not in self.records:
                 new["first_seen_at"] = new.get("first_seen_at") or now
                 new["last_verified_at"] = now
+                # Re-validate so validation_tier reflects current state
+                try:
+                    validate_record(new)
+                except Exception as e:
+                    log.warning("revalidate after upsert failed: %s", e)
                 self.records[key] = new
                 return True
 
@@ -1940,6 +1945,11 @@ class StartupDB:
                 elif old_v and new_v and old_v != new_v and old_v != "unknown" and new_v != "unknown":
                     self._log_conflict(key, field, old_v, new_v)
                     # Keep old
+            # Re-validate so validation_tier reflects current state
+            try:
+                validate_record(existing)
+            except Exception as e:
+                log.warning("revalidate after upsert failed: %s", e)
             return False
 
         # ── Legacy dict branch (preserves old behavior) ───────────────────
@@ -2988,6 +2998,11 @@ def fill_missing_data(
 
         if record_was_updated:
             updated += 1
+            # Re-validate so validation_tier reflects current state
+            try:
+                validate_record(rec)
+            except Exception as e:
+                log.warning("revalidate after fill failed: %s", e)
             db.records[norm] = rec
 
     db.save()
