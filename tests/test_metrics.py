@@ -1,4 +1,7 @@
 # tests/test_metrics.py
+import time
+import json
+import pytest
 from metrics import CallOutcome, GeminiCallRecord
 
 def test_outcome_enum_values():
@@ -24,3 +27,28 @@ def test_call_record_serializes_to_jsonl():
     line = rec.to_jsonl()
     assert '"outcome": "parsed"' in line
     assert line.endswith("\n")
+
+from metrics import gemini_call, GeminiCallLog
+
+def test_gemini_call_records_success(tmp_path):
+    log = GeminiCallLog(tmp_path / "calls.jsonl")
+    with gemini_call(log, label="planner", prompt="hello") as call:
+        time.sleep(0.01)
+        call.set_response("world", strategy=0)
+        call.set_outcome(CallOutcome.PARSED)
+    lines = (tmp_path / "calls.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["label"] == "planner"
+    assert rec["outcome"] == "parsed"
+    assert rec["response_chars"] == 5
+    assert rec["latency_ms"] >= 10
+
+def test_gemini_call_records_exception(tmp_path):
+    log = GeminiCallLog(tmp_path / "calls.jsonl")
+    with pytest.raises(RuntimeError):
+        with gemini_call(log, label="planner", prompt="hi") as call:
+            raise RuntimeError("boom")
+    rec = json.loads((tmp_path / "calls.jsonl").read_text().strip())
+    assert rec["outcome"] == "crash"
+    assert "boom" in rec["error"]
