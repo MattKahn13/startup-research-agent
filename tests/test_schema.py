@@ -94,3 +94,26 @@ def test_acquisition_amount_coerced():
         acquisition_amount_usd="$1.2B",
     )
     assert r.acquisition_amount_usd == 1_200_000_000
+
+
+from schema import ExtractionResult, SearchStrategy, GapItem
+
+
+def test_extraction_result_round_trips():
+    r = ExtractionResult(records=[
+        StartupRecord(company_name="A", cornellians=[_good_aff()], proof_url="https://x"),
+    ], notes="ok")
+    s = r.model_dump_json()
+    r2 = ExtractionResult.model_validate_json(s)
+    assert r2.records[0].company_name == "A"
+
+
+def test_search_strategy_requires_queries():
+    with pytest.raises(ValidationError):
+        SearchStrategy(name="x", rationale="y", queries=[])
+
+
+def test_gap_item_tier_enforced():
+    with pytest.raises(ValidationError):
+        GapItem(record_id="a", missing_fields=["founders"],
+                validation_tier="bogus", suggested_action="search")

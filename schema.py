@@ -120,3 +120,21 @@ class StartupRecord(BaseModel):
             return int(str(v).replace(",", "").strip())
         except ValueError:
             raise ValueError(f"cannot parse int: {v!r}")
+
+
+class ExtractionResult(BaseModel):
+    records: list[StartupRecord] = Field(default_factory=list)
+    notes: str = ""
+
+
+class SearchStrategy(BaseModel):
+    name: str
+    rationale: str
+    queries: list[str] = Field(min_length=1)
+
+
+class GapItem(BaseModel):
+    record_id: str
+    missing_fields: list[str]
+    validation_tier: TierType
+    suggested_action: str
