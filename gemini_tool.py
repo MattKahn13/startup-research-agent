@@ -528,10 +528,12 @@ for (var s = 0; s < selectors.length; s++) {
     var els = document.querySelectorAll(selectors[s]);
     if (els.length) {
         var last = els[els.length - 1];
-        return (last.innerText || last.textContent || '').trim();
+        // Strategy index = selector index (0=message-content, 1=response-container, 2=model-response)
+        return {text: (last.innerText || last.textContent || '').trim(), strategy: s};
     }
 }
-return '';
+// No active selector matched — empty fallback before dead-code strategies below.
+return {text: '', strategy: -1};
 
 function getText(el) {
     if (!el) return '';
@@ -635,7 +637,8 @@ for (var i = strongResponse.length - 1; i >= 0; i--) {
     var t = getText(el);
     // 50-char floor: skips bare labels like "Gemini said" (11 chars) while
     // still admitting empty-ish replies wrapped in markdown ("```json [] ```").
-    if (t.length >= 50 && t.length < 30000) return t;
+    // Strategy 3: Pass A — strong signals (model-response, role=model/assistant)
+    if (t.length >= 50 && t.length < 30000) return {text: t, strategy: 3};
 }
 
 // Pass B — WEAK signals: class-name heuristics. These are noisier (the
@@ -656,7 +659,8 @@ for (var i = weakResponse.length - 1; i >= 0; i--) {
     var t = getText(el);
     // Real Gemini responses for our use case are 100+ chars; toolbars are
     // typically <80 chars total. 150 is a comfortable cutoff.
-    if (t.length >= 150 && t.length < 200000) return t;
+    // Strategy 4: Pass B — weak signals (class-name heuristics)
+    if (t.length >= 150 && t.length < 200000) return {text: t, strategy: 4};
 }
 
 // (Legacy Strategies 1-6 removed — they queried `<message-content>`,
@@ -685,7 +689,8 @@ for (var i = textBlocks.length - 1; i >= 0; i--) {
     if (isUserScoped(el)) continue;
     if (isInteractiveChrome(el)) continue;
     var t = getText(el);
-    if (t.length >= 100 && t.length < 12000) return t;
+    // Strategy 7: last sufficiently-long text block in <p>/<pre>/<code>/etc.
+    if (t.length >= 100 && t.length < 12000) return {text: t, strategy: 7};
 }
 
 // Strategy 8: broadest fallback. Same reverse-order rule — the last large
@@ -702,7 +707,8 @@ for (var i = candidates.length - 1; i >= 0; i--) {
     if (isUserScoped(el)) continue;
     if (isInteractiveChrome(el)) continue;
     var t = getText(el);
-    if (t.length >= 100 && t.length < 12000) return t;
+    // Strategy 8: broadest div/section/article/main fallback
+    if (t.length >= 100 && t.length < 12000) return {text: t, strategy: 8};
 }
 
 // Strategy 9: absolute last resort — return the entire visible body text.
@@ -712,7 +718,8 @@ for (var i = candidates.length - 1; i >= 0; i--) {
 // — anything after that marker is necessarily the model reply (or empty).
 // Doing this in Python is more robust than guessing which DOM element is
 // the response.
-return (document.body && document.body.innerText) || '';
+// Strategy 9: absolute last resort — entire body.innerText
+return {text: (document.body && document.body.innerText) || '', strategy: 9};
 """
 
 # ── JS: check if response is complete ───────────────────────────────────────
@@ -1193,13 +1200,36 @@ def _is_response_complete(driver: uc.Chrome) -> bool:
         return False
 
 
+# Tracks which JS strategy (in _JS_EXTRACT_RESPONSE) returned the most recent
+# response text. Updated by _extract_latest_response_text on each call. -1 means
+# unknown / extraction failed / no strategy fired. See HANDOFF.md and Task B3
+# (2026-06-05) — instrumentation for observability of DOM-drift.
+_LAST_EXTRACTOR_STRATEGY: int = -1
+
+
 def _extract_latest_response_text(driver: uc.Chrome) -> str:
-    """Extract the text of the most recent model response."""
+    """Extract the text of the most recent model response.
+
+    Also records which JS extraction strategy fired into the module-level
+    ``_LAST_EXTRACTOR_STRATEGY`` (mirrored onto ``GeminiSession`` as
+    ``last_extractor_strategy`` after ``prompt()`` returns).
+    """
+    global _LAST_EXTRACTOR_STRATEGY
     try:
-        return driver.execute_script(_JS_EXTRACT_RESPONSE) or ""
+        _raw = driver.execute_script(_JS_EXTRACT_RESPONSE)
+        if isinstance(_raw, dict):
+            result = _raw.get("text", "") or ""
+            _LAST_EXTRACTOR_STRATEGY = int(_raw.get("strategy", -1))
+        else:
+            # Backward-compat: older JS returned a bare string.
+            result = _raw or ""
+            _LAST_EXTRACTOR_STRATEGY = -1
+        return result
     except (TimeoutException, WebDriverException):
+        _LAST_EXTRACTOR_STRATEGY = -1
         return ""
     except Exception:
+        _LAST_EXTRACTOR_STRATEGY = -1
         return ""
 
 
@@ -1928,6 +1958,9 @@ class GeminiSession:
         self.headless = headless
         self.verbose = verbose
         self._driver: Optional[uc.Chrome] = None
+        # Index of the JS extractor strategy that returned the most recent
+        # response (see _JS_EXTRACT_RESPONSE). -1 = unknown / no prompt yet.
+        self.last_extractor_strategy: int = -1
 
     def __enter__(self) -> "GeminiSession":
         self.start()
@@ -1988,7 +2021,11 @@ class GeminiSession:
                 except Exception as exc2:
                     log.error(f"Retry navigation also failed: {exc2}")
                     raise RuntimeError(f"Failed to navigate to Gemini: {exc2}")
-        return send_prompt(self._driver, text, files=files)
+        _response = send_prompt(self._driver, text, files=files)
+        # Snapshot which JS extractor strategy returned the text (for
+        # observability / DOM-drift detection — see Task B3, 2026-06-05).
+        self.last_extractor_strategy = _LAST_EXTRACTOR_STRATEGY
+        return _response
 
     def deep_research(self, prompt: str, timeout: int = 600) -> str:
         """
@@ -2203,14 +2240,17 @@ class GeminiSession:
                     time.sleep(3)
                 except Exception:
                     pass
-                # Extract after clicking
-                report = driver.execute_script(_JS_EXTRACT_RESEARCH_REPORT) or ""
+                # Extract after clicking. The embedded _JS_EXTRACT_RESPONSE
+                # fallback may return a {text, strategy} dict — unwrap to str.
+                _rr = driver.execute_script(_JS_EXTRACT_RESEARCH_REPORT)
+                report = (_rr.get("text", "") if isinstance(_rr, dict) else (_rr or ""))
                 if report and len(report) >= DR_MIN_REPORT_CHARS:
                     return report
 
             # Extract current text
             try:
-                current = driver.execute_script(_JS_EXTRACT_RESEARCH_REPORT) or ""
+                _rr = driver.execute_script(_JS_EXTRACT_RESEARCH_REPORT)
+                current = (_rr.get("text", "") if isinstance(_rr, dict) else (_rr or ""))
             except Exception:
                 current = ""
 
