@@ -54,7 +54,9 @@ from queue import Queue, Empty
 from typing import Optional
 from urllib.parse import quote_plus, urlparse
 
-from metrics import gemini_call, GeminiCallLog, CallOutcome
+from metrics import gemini_call, GeminiCallLog, CallOutcome, selenium_fetch, SeleniumFetchLog
+
+_SELENIUM_LOG = SeleniumFetchLog(Path("startup_output/selenium_fetches.jsonl"))
 
 _GEMINI_CALL_LOG = GeminiCallLog(Path("startup_output/gemini_calls.jsonl"))
 
@@ -1350,51 +1352,66 @@ def scrape_page(driver, url: str, cache) -> tuple[str, str]:
     or when HTTP is blocked/fails.  Results are stored in cache (PageCache or dict).
     """
     if url in cache:
-        return cache[url], "ok"
+        with selenium_fetch(_SELENIUM_LOG, url=url, path="cache") as _h:
+            cached_text = cache[url]
+            _h.set_result(chars=len(cached_text), outcome="ok")
+            return cached_text, "ok"
 
     domain = urlparse(url).netloc.lower()
     needs_selenium = any(d in domain for d in _JS_HEAVY_DOMAINS)
 
     if not needs_selenium:
-        text, status = _http_scrape(url)
-        if status == "ok":
-            cache[url] = text
-            return text, "ok"
-        # "empty", "blocked", "error" — fall through to Selenium for a second
-        # chance. Static pages sometimes return empty body to plain requests
-        # but render full content under a real browser (anti-bot defences).
-
-    # Selenium path: required for JS-heavy sites or when HTTP failed
-    for attempt in range(MAX_RETRIES):
-        try:
-            driver.get(url)
-            WebDriverWait(driver, PAGE_TIMEOUT).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
-            )
-            # readyState=complete fires before SPA hydration on many sites;
-            # poll for the body text to stabilise instead of a fixed sleep.
-            _wait_for_body_to_stabilise(driver, max_wait=8.0, stable_for=1.0)
-            soup = BeautifulSoup(driver.page_source, "lxml")
-            text, status = _soup_to_text(soup, url)
+        with selenium_fetch(_SELENIUM_LOG, url=url, path="http") as _h:
+            text, status = _http_scrape(url)
             if status == "ok":
                 cache[url] = text
-                return text, status
-            # Still empty — give it one more chance with a longer settle window
-            # before declaring the page truly empty.
-            if status == "empty" and attempt < MAX_RETRIES - 1:
-                _wait_for_body_to_stabilise(driver, max_wait=10.0, stable_for=2.0)
+                _h.set_result(chars=len(text), outcome="ok")
+                return text, "ok"
+            # "empty", "blocked", "error" — fall through to Selenium for a second
+            # chance. Static pages sometimes return empty body to plain requests
+            # but render full content under a real browser (anti-bot defences).
+            _http_outcome = "empty" if status == "empty" else ("blocked" if status == "blocked" else "crash")
+            _h.set_result(chars=len(text or ""), outcome=_http_outcome)
+
+    # Selenium path: required for JS-heavy sites or when HTTP failed
+    with selenium_fetch(_SELENIUM_LOG, url=url, path="selenium") as _h:
+        for attempt in range(MAX_RETRIES):
+            try:
+                driver.get(url)
+                WebDriverWait(driver, PAGE_TIMEOUT).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+                # readyState=complete fires before SPA hydration on many sites;
+                # poll for the body text to stabilise instead of a fixed sleep.
+                _wait_for_body_to_stabilise(driver, max_wait=8.0, stable_for=1.0)
                 soup = BeautifulSoup(driver.page_source, "lxml")
                 text, status = _soup_to_text(soup, url)
                 if status == "ok":
                     cache[url] = text
+                    _h.set_result(chars=len(text), outcome="ok")
                     return text, status
-            return text, status
-        except (TimeoutException, WebDriverException):
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(3)
-        except Exception:
-            break
-    return "", "error"
+                # Still empty — give it one more chance with a longer settle window
+                # before declaring the page truly empty.
+                if status == "empty" and attempt < MAX_RETRIES - 1:
+                    _wait_for_body_to_stabilise(driver, max_wait=10.0, stable_for=2.0)
+                    soup = BeautifulSoup(driver.page_source, "lxml")
+                    text, status = _soup_to_text(soup, url)
+                    if status == "ok":
+                        cache[url] = text
+                        _h.set_result(chars=len(text), outcome="ok")
+                        return text, status
+                _h.set_result(chars=len(text or ""), outcome="empty" if status == "empty" else status)
+                return text, status
+            except (TimeoutException, WebDriverException):
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(3)
+                else:
+                    _h.set_result(chars=0, outcome="timeout")
+            except Exception:
+                _h.set_result(chars=0, outcome="crash")
+                break
+        _h.set_result(chars=0, outcome="empty")
+        return "", "error"
 
 
 def score_source(url: str) -> int:

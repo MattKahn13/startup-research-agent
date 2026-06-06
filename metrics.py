@@ -96,3 +96,59 @@ def gemini_call(log: GeminiCallLog, label: str, prompt: str):
             error=handle.error,
             extractor_strategy=handle.strategy,
         ))
+
+
+@dataclass
+class SeleniumFetchRecord:
+    timestamp: str
+    url: str
+    path: str        # "cache" | "http" | "selenium"
+    latency_ms: int
+    outcome: str     # "ok" | "empty" | "timeout" | "captcha" | "blocked" | "crash"
+    chars: int
+
+    def to_jsonl(self) -> str:
+        return json.dumps(asdict(self)) + "\n"
+
+
+class SeleniumFetchLog:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def append(self, rec: SeleniumFetchRecord) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(rec.to_jsonl())
+
+
+class _FetchHandle:
+    def __init__(self, url: str, path: str):
+        self.url = url
+        self.path = path
+        self.chars = 0
+        self.outcome = "ok"
+
+    def set_result(self, chars: int, outcome: str) -> None:
+        self.chars = chars
+        self.outcome = outcome
+
+
+@contextlib.contextmanager
+def selenium_fetch(log: SeleniumFetchLog, url: str, path: str):
+    handle = _FetchHandle(url, path)
+    started = time.perf_counter()
+    try:
+        yield handle
+    except Exception as e:
+        handle.outcome = f"crash:{type(e).__name__}"
+        raise
+    finally:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        log.append(SeleniumFetchRecord(
+            timestamp=_dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            url=handle.url,
+            path=handle.path,
+            latency_ms=latency_ms,
+            outcome=handle.outcome,
+            chars=handle.chars,
+        ))

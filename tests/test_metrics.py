@@ -52,3 +52,15 @@ def test_gemini_call_records_exception(tmp_path):
     rec = json.loads((tmp_path / "calls.jsonl").read_text().strip())
     assert rec["outcome"] == "crash"
     assert "boom" in rec["error"]
+
+from metrics import selenium_fetch, SeleniumFetchLog
+
+def test_selenium_fetch_records(tmp_path):
+    log = SeleniumFetchLog(tmp_path / "fetches.jsonl")
+    with selenium_fetch(log, url="https://example.com", path="http") as f:
+        f.set_result(chars=4200, outcome="ok")
+    rec = json.loads((tmp_path / "fetches.jsonl").read_text().strip())
+    assert rec["url"] == "https://example.com"
+    assert rec["path"] == "http"
+    assert rec["outcome"] == "ok"
+    assert rec["chars"] == 4200
