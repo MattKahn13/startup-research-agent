@@ -56,6 +56,9 @@ from typing import Optional, Type, TypeVar
 from pydantic import BaseModel, ValidationError
 from urllib.parse import quote_plus, urlparse
 
+from schema import StartupRecord, ExtractionResult, CornellianAffiliation, SearchStrategy, GapItem
+from evidence import span_present
+
 from metrics import gemini_call, GeminiCallLog, CallOutcome, selenium_fetch, SeleniumFetchLog, RoundMetrics
 
 _SELENIUM_LOG = SeleniumFetchLog(Path("startup_output/selenium_fetches.jsonl"))
@@ -1566,6 +1569,81 @@ def _log_parse_failure(text: str, model_cls, exc) -> None:
         f.write(f"has_fence={'```json' in text}\n")
         f.write(text[:8000])
         f.write("\n=== END ===\n\n")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  PASS-1 / PASS-2 EXTRACTION PROMPTS  (evidence-span guarded)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_PROMPT_HARD_CAP = 45_000  # below the 50KB cliff; see wiki/site-profiles/gemini-web.md
+
+
+_PASS1_HEADER = (
+    "You are an extractor, not a researcher. Read the text below and extract every company "
+    "where AT LEAST ONE founder, co-founder, or significant role-holder is a Cornellian "
+    "(alumnus, faculty, student, postdoc, or researcher of any Cornell school: CU Ithaca, "
+    "Cornell Tech, Weill Cornell Medicine, or Cornell Vet).\n\n"
+    "RULES:\n"
+    "- Use ONLY the text provided below. Do not recall, infer, or estimate from prior knowledge.\n"
+    "- For every non-null value, include the substring of the text supporting it in `evidence_span`.\n"
+    "- If a field is not stated in the text, return null. Do not guess.\n"
+    "- Output a single ```json fenced code block containing one ExtractionResult object.\n"
+    "- The marker on the last line is the boundary; nothing useful comes before it.\n\n"
+)
+
+
+def _build_pass1_prompt(text: str) -> str:
+    schema_excerpt = json.dumps({
+        "records": [{
+            "company_name": "string",
+            "cornellians": [{
+                "name": "string", "school": "CU|Cornell Tech|Weill|Vet|unknown",
+                "role": "alumnus|faculty|student|postdoc|researcher",
+                "grad_year": "int or null", "role_at_company":
+                "founder|cofounder|ceo|cto|early_employee|board|investor|advisor",
+                "evidence_span": "string (must be a substring of input)",
+                "source_url": "string",
+            }],
+            "proof_url": "string",
+            "status": "active|acquired|shutdown|ipo|unknown",
+            "funding_total_usd": "int or null",
+            "founded_year": "int or null",
+        }],
+        "notes": "string",
+    }, indent=2)
+    return (
+        _PASS1_HEADER
+        + "JSON SHAPE (every field listed; return null when not stated):\n"
+        + f"```json\n{schema_excerpt}\n```\n\n"
+        + "TEXT TO EXTRACT FROM:\n"
+        + text
+        + f"\n\n{_END_OF_PROMPT_MARKER}\n```json\n"
+    )
+
+
+def _extract_pass1(page_text: str, source_url: str) -> list[StartupRecord]:
+    prompt = _build_pass1_prompt(page_text)
+    if len(prompt) > _PROMPT_HARD_CAP:
+        overhead = len(prompt) - len(page_text)
+        budget = _PROMPT_HARD_CAP - overhead - 500
+        prompt = _build_pass1_prompt(page_text[:budget])
+        log.warning("pass1 prompt exceeded 45K; trimmed page_text to %d", budget)
+    response = call_gemini(prompt, label="extract_pass1")
+    result, outcome = _parse_json_typed(response, ExtractionResult)
+    if result is None:
+        return []
+    out: list[StartupRecord] = []
+    for r in result.records:
+        # Override proof_url with the actual source URL (Gemini sometimes invents one)
+        r.proof_url = source_url
+        # Evidence-span validation
+        kept_cornellians = [a for a in r.cornellians
+                            if span_present(a.evidence_span, page_text)]
+        if not kept_cornellians:
+            continue   # drop record: no verifiable affiliation
+        r.cornellians = kept_cornellians
+        out.append(r)
+    return out
 
 
 def _parse_json(raw: str, fallback=None):
