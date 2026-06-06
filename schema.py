@@ -129,8 +129,14 @@ class ExtractionResult(BaseModel):
 
 class SearchStrategy(BaseModel):
     name: str
-    rationale: str
+    rationale: str = ""
+    description: str = ""
+    priority: str = "medium"
     queries: list[str] = Field(min_length=1)
+
+
+class PlannerResponse(BaseModel):
+    strategies: list[SearchStrategy] = Field(min_length=1)
 
 
 class GapItem(BaseModel):

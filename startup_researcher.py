@@ -56,7 +56,7 @@ from typing import Optional, Type, TypeVar
 from pydantic import BaseModel, ValidationError
 from urllib.parse import quote_plus, urlparse
 
-from schema import StartupRecord, ExtractionResult, CornellianAffiliation, SearchStrategy, GapItem
+from schema import StartupRecord, ExtractionResult, CornellianAffiliation, SearchStrategy, PlannerResponse, GapItem
 from evidence import span_present
 
 from metrics import gemini_call, GeminiCallLog, CallOutcome, selenium_fetch, SeleniumFetchLog, RoundMetrics
@@ -2174,7 +2174,7 @@ def save_checkpoint(state: dict, page_cache=None):
 def plan_research(prompt: str) -> dict:
     """Ask Gemini to decompose the research into search strategies."""
 
-    plan_prompt = textwrap.dedent(f"""\
+    plan_prompt_body = textwrap.dedent(f"""\
     You are an expert research strategist. The user wants to build a
     COMPREHENSIVE directory of startups.
 
@@ -2194,26 +2194,19 @@ def plan_research(prompt: str) -> dict:
       - Competition winners (business plan competitions, demo days)
       - Angel investor group portfolios
 
-    OUTPUT FORMAT (NON-NEGOTIABLE):
-    Return your answer as a SINGLE JSON object wrapped in a fenced code
-    block tagged json. Inside the fence, the JSON must be syntactically
-    valid — every double-quote inside a string must be escaped as \\".
-    For Google search queries that need a phrase match, use SINGLE quotes
-    around the phrase, NOT double quotes (Google accepts both).
+    Schema (a PlannerResponse object wrapping a list of SearchStrategy):
 
-    Schema:
-
-    ```json
+    ```
     {{
         "strategies": [
             {{
                 "name": "Short label for this search angle",
                 "description": "What we expect to find",
+                "rationale": "Why this angle is promising",
                 "priority": "high",
                 "queries": [
                     "site:ycombinator.com 'Cornell University' founders",
-                    "Cornell Tech Runway alumni companies",
-                    "..."
+                    "Cornell Tech Runway alumni companies"
                 ]
             }}
         ]
@@ -2222,27 +2215,30 @@ def plan_research(prompt: str) -> dict:
 
     Generate 8-15 strategies with 3-5 queries each.
     Order by priority. Be AMBITIOUS — we want hundreds of startups.
-
-    REMINDER: never put a literal double-quote inside a query string. Use
-    'single quotes' for phrases. Wrap the entire JSON in a single ```json
-    fence — no prose, no second fence.
-
-    ===END_PROMPT===GEMINI_RESPONSE_BELOW===
     """)
+
+    plan_prompt = (
+        plan_prompt_body
+        + "\n\nFORMAT RULES:\n"
+        + "- Output exactly one ```json fenced block containing a PlannerResponse object.\n"
+        + "- Inside Google search queries, use SINGLE quotes for phrase matching (e.g. site:linkedin.com 'Cornell University' founder).\n"
+        + "- Do not include trailing text after the fenced block.\n"
+        + f"\n\n{_END_OF_PROMPT_MARKER}\n```json\n"
+    )
 
     raw = call_gemini(plan_prompt, label="Gemini (Planning)")
     fallback = {
         "strategies": [{"name": "General", "description": "Broad search",
+                        "rationale": "fallback when planner JSON unparseable",
                         "priority": "high", "queries": [prompt]}]
     }
-    result = _parse_json(raw, fallback=fallback)
-    # Normalise: Gemini sometimes emits the strategies LIST directly instead
-    # of the wrapping object. Accept either shape.
-    if isinstance(result, list):
-        result = {"strategies": result}
-    elif not isinstance(result, dict) or "strategies" not in result:
-        result = fallback
-    return result
+    result, outcome = _parse_json_typed(raw, PlannerResponse)
+    if result is None:
+        log.warning("planner returned unparseable JSON (outcome=%s); falling back to default strategy", outcome)
+        return fallback
+    # Return dict form so existing downstream consumers (which read
+    # plan["strategies"][i]["name"], etc.) keep working unchanged.
+    return result.model_dump(mode="json")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
