@@ -1711,6 +1711,56 @@ def _extract_pass2(record: StartupRecord, page_text: str) -> StartupRecord:
     return record
 
 
+def _simple_chunk(text: str, size: int, overlap: int) -> list[str]:
+    """Minimal sliding-window chunker; used by extract_from_page."""
+    if len(text) <= size:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    step = max(size - overlap, 1)
+    while start < len(text):
+        chunks.append(text[start:start + size])
+        start += step
+        if start >= len(text):
+            break
+    # Cap at 12 chunks — covers ~60K of content with 8K chunks; beyond that
+    # the page is probably navigation noise.
+    return chunks[:12]
+
+
+def extract_from_page(page_text: str, source_url: str) -> list[StartupRecord]:
+    """Two-pass extraction with degradation-aware schema mode.
+
+    A9: replaces the single-pass `_extract_startups_chunk` flow with
+    pass1 (discovery + evidence-validated) plus optional pass2 (enrichment)
+    when the ladder is at NORMAL. At DEMOTED we skip pass2 and use smaller
+    chunks; at SCRAPE_ONLY or worse we skip extraction entirely.
+    """
+    level = _ladder().level if _ladder() else Level.NORMAL
+    if level >= Level.SCRAPE_ONLY:
+        return []
+    page_text = (page_text or "").strip()
+    if not page_text:
+        return []
+
+    chunk_size = 15000 if level == Level.DEMOTED else 30000
+    chunks = _simple_chunk(page_text, chunk_size, 1000)
+
+    out: list[StartupRecord] = []
+    seen_names: set[str] = set()
+    for chunk in chunks:
+        pass1 = _extract_pass1(chunk, source_url)
+        for rec in pass1:
+            key = _normalise_name(rec.company_name)
+            if not key or key in seen_names:
+                continue
+            seen_names.add(key)
+            if level == Level.NORMAL:
+                rec = _extract_pass2(rec, chunk)
+            out.append(rec)
+    return out
+
+
 def _slice_and_unfence(text: str) -> str:
     sliced = text.rsplit(_END_OF_PROMPT_MARKER, 1)[1] if _END_OF_PROMPT_MARKER in text else text
     fences = _FENCE_RE.findall(sliced)
@@ -2126,48 +2176,63 @@ def extract_startups(
     strategy_name: str,
 ) -> list[dict]:
     """Extract structured startup records from a single page.
-    Long pages are chunked into multiple Gemini calls so no content is dropped."""
 
-    page_text = (page_text or "").strip()
-    if not page_text:
+    A9: now delegates to the two-pass `extract_from_page` (pass1 discovery +
+    optional pass2 enrichment). Result models are dumped to dicts here so
+    existing downstream callers (DB upsert, gap report) keep working until
+    Task A10 makes them model-aware.
+
+    The `prompt` and `strategy_name` arguments are accepted for backward
+    compatibility but no longer threaded into the extraction prompts —
+    pass1/pass2 use their own schema-driven prompts.
+    """
+    records = extract_from_page(page_text, page_url)
+    if not records:
         return []
 
-    # Chunk pages that exceed MAX_CONTENT_PER_CALL — overlap by 1KB to avoid
-    # splitting a company description in two
-    chunks: list[str] = []
-    if len(page_text) <= MAX_CONTENT_PER_CALL:
-        chunks = [page_text]
-    else:
-        step = MAX_CONTENT_PER_CALL - 1000
-        i = 0
-        while i < len(page_text):
-            chunks.append(page_text[i:i + MAX_CONTENT_PER_CALL])
-            i += step
-        # Cap at 12 chunks — covers a 60K-page-worth-of-content safely with
-        # 8K-char chunks; beyond that the page is probably navigation noise.
-        chunks = chunks[:12]
-
-    if len(chunks) > 1:
-        log.info(f"  Page is {len(page_text)} chars — splitting into {len(chunks)} chunks")
-
-    all_records: list[dict] = []
-    for chunk_idx, content in enumerate(chunks):
-        records = _extract_startups_chunk(content, page_url, prompt,
-                                           strategy_name, chunk_idx, len(chunks))
-        all_records.extend(records)
-
-    # Dedupe within this page (same company mentioned in multiple chunks)
-    seen: set[str] = set()
-    deduped = []
-    for r in all_records:
-        key = _normalise_name(r.get("company_name", ""))
-        if key and key not in seen:
-            seen.add(key)
-            deduped.append(r)
-    return deduped
+    # Temporary shim (A9 -> A10): convert StartupRecord models to dicts so
+    # downstream code that expects dicts (DB upsert, gap report) still works.
+    # Attach the same source-metadata fields the old flow added.
+    cred = score_source(page_url)
+    domain = urlparse(page_url).netloc
+    out: list[dict] = []
+    for rec in records:
+        d = rec.model_dump(mode="json")
+        d["source_url"] = page_url
+        d["source_credibility"] = cred
+        d["source_domain"] = domain
+        out.append(d)
+    return out
 
 
 def _extract_startups_chunk(
+    content: str,
+    page_url: str,
+    prompt: str = "",
+    strategy_name: str = "",
+    chunk_idx: int = 0,
+    total_chunks: int = 1,
+) -> list[dict]:
+    """Backward-compat shim (A9). Forwards to the two-pass `extract_from_page`
+    and returns dicts so any lingering callers keep working. The legacy
+    single-pass prompt below is unreachable and kept only for reference until
+    A10 lands; it will be removed once nothing imports this name."""
+    records = extract_from_page(content, page_url)
+    if not records:
+        return []
+    cred = score_source(page_url)
+    domain = urlparse(page_url).netloc
+    out: list[dict] = []
+    for rec in records:
+        d = rec.model_dump(mode="json")
+        d["source_url"] = page_url
+        d["source_credibility"] = cred
+        d["source_domain"] = domain
+        out.append(d)
+    return out
+
+
+def _extract_startups_chunk_legacy_unreachable(
     content: str,
     page_url: str,
     prompt: str,
@@ -2175,7 +2240,9 @@ def _extract_startups_chunk(
     chunk_idx: int = 0,
     total_chunks: int = 1,
 ) -> list[dict]:
-    """Extract records from a single chunk of page text."""
+    """LEGACY single-pass extraction. No longer reachable after A9 wired the
+    two-pass flow into `extract_startups`. Retained for reference; delete once
+    A10 confirms downstream parity."""
 
     # B8: Degradation ladder short-circuit. At SCRAPE_ONLY or worse we skip
     # extraction entirely; A9 will add the level-2 (DEMOTED) two-pass path.
