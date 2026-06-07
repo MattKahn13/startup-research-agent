@@ -1,0 +1,72 @@
+{
+  "citigroup": {
+    "final_url": "https://www.linkedin.com/company/citigroup/about/",
+    "bytes": 1454406,
+    "latency_s": 55.1,
+    "jsonld": {},
+    "voyager": {
+      "employee_count": 1134,
+      "follower_count": 6335,
+      "name": "Citigroup",
+      "hq_city": "London",
+      "hq_country": "GB",
+      "hq_postal": "E14 5HQ",
+      "hq_line1": "8 Canada Square"
+    }
+  },
+  "hyro": {
+    "final_url": "https://www.linkedin.com/company/unavailable/",
+    "bytes": 1196810,
+    "latency_s": 10.2,
+    "jsonld": {},
+    "voyager": {}
+  },
+  "nanit": {
+    "final_url": "https://www.linkedin.com/company/nanit/about/",
+    "bytes": 1888562,
+    "latency_s": 5.7,
+    "jsonld": {},
+    "voyager": {
+      "employee_count": 207,
+      "follower_count": 17820,
+      "tagline": "Parenthood looks different here!",
+      "name": "Nanit",
+      "company_url": "http://www.nanit.com",
+      "hq_city": "Lehi",
+      "hq_region": "Utah",
+      "hq_country": "US",
+      "hq_postal": "84043",
+      "hq_line1": "2500 Executive Parkway"
+    }
+  },
+  "cornell-edu": {
+    "final_url": "https://www.linkedin.com/school/cornell-university/about/",
+    "bytes": 1957676,
+    "latency_s": 9.2,
+    "jsonld": {},
+    "voyager": {
+      "employee_count": 19929,
+      "follower_count": 2693,
+      "founded_year": "1865",
+      "tagline": "Learning. Discovery. Engagement. Join the #Cornell conversation.",
+      "name": "Cornell University",
+      "company_url": "http://www.cornell.edu",
+      "specialities": [
+        "education",
+        "research"
+      ],
+      "hq_city": "Ithaca",
+      "hq_region": "NY",
+      "hq_country": "US",
+      "hq_postal": "14853",
+      "hq_line1": "Day Hall"
+    }
+  },
+  "reid-hoffman": {
+    "final_url": "https://www.linkedin.com/in/reidhoffman/",
+    "bytes": 1163454,
+    "latency_s": 15.9,
+    "jsonld": {},
+    "voyager": {}
+  }
+}
