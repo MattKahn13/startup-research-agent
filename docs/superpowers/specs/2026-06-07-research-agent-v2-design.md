@@ -169,6 +169,29 @@ Stored as JSON, one file per domain (`~/.web_agent_cookies/<domain>.json`, mode 
 - On exit (atexit + signal handlers for SIGINT/SIGTERM), force-kills any still-alive driver process owned by any active session, and removes its profile dir.
 - Provides `kill_stale()` -- finds chromedriver / chrome processes spawned by this Python interpreter that no longer have a live `BrowserSession` and kills them. Called by the Doctor as a health-check auto-heal.
 
+### S3a. Captcha handoff helper
+
+When the browser session detects an interactive challenge (Google `/sorry/`, Cloudflare interstitial, PerimeterX, DataDome, generic "Just a moment"), `BrowserSession` MUST:
+
+1. Restore the window from minimized state (`driver.maximize_window()`) so the human can see and interact with the challenge.
+2. Print a loud, unambiguous message to stdout naming the detector and the URL.
+3. Poll for a "post-challenge marker" (a CSS selector the caller supplies) up to a timeout.
+4. On clear: re-minimize the window and resume.
+5. On timeout: raise `CaptchaUnresolved` so the caller can decide whether to give up or escalate.
+
+```python
+class BrowserSession:
+    def handoff_for_captcha(self, *, detection_message: str,
+                              post_clear_selector: str,
+                              timeout_s: int = 600) -> None: ...
+```
+
+Detection itself is per-target (the caller invokes `handoff_for_captcha` after detecting the challenge using markers from `wiki/primitives/captcha-handoff.md`). The primitive's job is the window dance + polling, not the detection.
+
+Reference behavior: `startup_researcher.py:1207-1270` already implements this for Google search. The primitive lifts it out so every scraper inherits.
+
+Wiki: [[~/.claude/web-agent-skills/wiki/primitives/captcha-handoff.md]] (2026-06-07 un-minimize section).
+
 ### S4. Page-stabilise helpers
 
 Extracted from the existing `_wait_for_body_to_stabilise` in `startup_researcher.py` but generalized:
