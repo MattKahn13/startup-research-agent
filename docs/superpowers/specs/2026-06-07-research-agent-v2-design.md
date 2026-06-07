@@ -20,7 +20,7 @@ After this pass:
 
 1. The browser layer is a small set of bullet-proof primitives, audited and published to `web-agent-skills` so other projects benefit.
 2. Search is HTTP-first via a three-rung engine ladder. Selenium-Google is the last resort, used rarely.
-3. Records live in SQLite with a JSON export mirror for git diffability and human inspection.
+3. Records live in DuckDB with a JSON export mirror for git diffability and human inspection.
 4. Records that fail evidence-span land in a candidates pool. Subsequent rounds target those candidates with planner-generated DDG queries. Promotion is automatic when better evidence is found.
 5. A `Doctor` module runs script-based checks every round and every 60 seconds, auto-heals what it can, escalates what it can't, and feeds the degradation ladder.
 
@@ -30,7 +30,7 @@ After this pass:
 - Replacing Pydantic models, the two-pass extraction prompts, or the degradation ladder. All carry forward from the hardening pass.
 - Building new analytics dashboards. The existing markdown reports and CSV exports stay.
 - Replacing browser-Gemini with the Anthropic / Gemini API. Out of scope by user direction.
-- Migrating the existing 1,389 deduped records to the new SQLite schema. v2 starts fresh; migration is a follow-up task that reads from `startup_output_test/startups_db_deduped.json` and inserts.
+- Migrating the existing 1,389 deduped records to the new DuckDB schema. v2 starts fresh; migration is a follow-up task that reads from `startup_output_test/startups_db_deduped.json` and inserts.
 - Cross-IP rotation, paid proxies, or paid CAPTCHA solvers. The three-rung search ladder removes the need.
 
 ## Core principles (carried forward + new)
@@ -45,7 +45,7 @@ From the hardening pass:
 New in v2:
 
 - **HTTP-first.** Browser is the last rung, not the default. Selenium is reserved for sites that genuinely need JS rendering or auth flows that can't be done via HTTP.
-- **Single store, multiple views.** SQLite is the working store. JSON export is the audit view. CSV exports are the analytics view. They derive from the same source.
+- **Single store, multiple views.** DuckDB is the working store. JSON export is the audit view. CSV exports are the analytics view. They derive from the same source.
 - **Never lose work.** Failed extractions become candidates. Candidates become targeted searches. Recovery is a first-class flow, not a follow-up task.
 - **Doctor before degradation.** Process and session hygiene is checked before parse rate. A leaked chromedriver gets killed before it can affect the parse rate that triggers the ladder.
 
@@ -55,13 +55,13 @@ Five workstreams. Each is independently shippable but they compose.
 
 | Workstream | What it ships | Depends on |
 |---|---|---|
-| **S -- Selenium primitive set** | New `browser/` package: `BrowserSession`, `CookieStore`, `OrphanReaper`, primitive-level integration tests | (foundation) |
-| **R -- Records store** | New `records/` package: SQLite schema, `RecordStore` interface, JSON export script, monolith migration | (independent of S; can land in parallel) |
+| **R -- Records store** | New `records/` package: DuckDB schema, `RecordStore` interface, JSON export script, monolith migration | (foundation; lands first) |
+| **S -- Selenium primitive set** | New `browser/` package: `BrowserSession`, `CookieStore`, `OrphanReaper`, primitive-level integration tests | R (so any Selenium-collected data goes to the new store) |
 | **Q -- Query rung ladder** | New `query/` package: `DDGEngine`, `BraveEngine`, `MojeekEngine`, `StartpageEngine`, `SeleniumGoogleEngine`, `QueryLadder` | S (the last-rung Selenium-Google uses the new `BrowserSession`) |
 | **F -- Recovery flow** | Candidates table in R, new round mode in main loop, planner prompt variant for recovery rounds | R (candidates store) + Q (recovery search) |
-| **D -- Doctor** | `doctor/` package: `Check` interface, scheduled runner, `doctor.jsonl` log, hooks into the degradation ladder | (lands incrementally with S/R/Q/F; each workstream contributes its own checks) |
+| **D -- Doctor** | `doctor/` package: `Check` interface, scheduled runner, `doctor.jsonl` log, hooks into the degradation ladder | (lands incrementally with R/S/Q/F; each workstream contributes its own checks) |
 
-Landing order: **S and R in parallel → Q → F**. **D lands incrementally** alongside every other workstream -- each delivers its own initial check set.
+Landing order: **R first → S → Q → F**. R blocks everything else so that no work ever runs against the monolithic JSON DB after v2 begins. **D lands incrementally** alongside every other workstream -- each delivers its own initial check set.
 
 ## Workstream S -- Selenium primitive set
 
@@ -185,79 +185,94 @@ This is the wiki contribution the user asked for in the brainstorm.
 
 ## Workstream R -- Records store
 
-### R1. SQLite schema
+### R1. DuckDB schema
 
-One database file: `startup_output/records.db`. Tables:
+One database file: `startup_output/records.duckdb`. DuckDB was chosen over SQLite specifically because it supports modern `ALTER TABLE` operations natively -- column renames, type changes, drops are all single statements. That matters during the build, when the schema will iterate. Native JSON column type. Single-file embedded like SQLite. Single-writer concurrency model (the `RecordStore` instance owns the write connection; reads are unrestricted).
+
+Tables:
 
 ```sql
+CREATE SEQUENCE seq_cornellians START 1;
+CREATE SEQUENCE seq_query_log START 1;
+CREATE SEQUENCE seq_promotion_log START 1;
+
 CREATE TABLE companies (
-    slug              TEXT PRIMARY KEY,        -- canonical name from _normalise_name
-    company_name      TEXT NOT NULL,
-    proof_url         TEXT NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'unknown',  -- enum
-    description       TEXT,
-    industry          TEXT,
-    funding_total_usd INTEGER,
-    funding_stage     TEXT,
+    slug              VARCHAR PRIMARY KEY,        -- canonical name from _normalise_name
+    company_name      VARCHAR NOT NULL,
+    proof_url         VARCHAR NOT NULL,
+    status            VARCHAR NOT NULL DEFAULT 'unknown',  -- enum at the Pydantic layer
+    description       VARCHAR,
+    industry          VARCHAR,
+    funding_total_usd BIGINT,
+    funding_stage     VARCHAR,
     funding_last_round_year INTEGER,
     founded_year      INTEGER,
     employee_count    INTEGER,
-    is_public         INTEGER,                 -- 0/1
-    headquarters      TEXT,
+    is_public         BOOLEAN,
+    headquarters      VARCHAR,
     exit_year         INTEGER,
-    acquirer          TEXT,
-    acquisition_amount_usd INTEGER,
-    website_url       TEXT,
-    linkedin_company_url TEXT,
-    crunchbase_url    TEXT,
-    wikipedia_url     TEXT,
-    tags              TEXT,                    -- JSON array
-    non_cornell_cofounder_schools TEXT,         -- JSON array
-    validation_tier   TEXT NOT NULL,           -- enum
-    validation_issues TEXT,                    -- JSON array
-    first_seen_at     TEXT NOT NULL,
-    last_verified_at  TEXT NOT NULL
+    acquirer          VARCHAR,
+    acquisition_amount_usd BIGINT,
+    website_url       VARCHAR,
+    linkedin_company_url VARCHAR,
+    crunchbase_url    VARCHAR,
+    wikipedia_url     VARCHAR,
+    tags              JSON,                    -- native JSON, queryable via json_extract
+    non_cornell_cofounder_schools JSON,
+    validation_tier   VARCHAR NOT NULL,         -- enum at the Pydantic layer
+    validation_issues JSON,
+    first_seen_at     TIMESTAMP NOT NULL,
+    last_verified_at  TIMESTAMP NOT NULL
 );
 
 CREATE TABLE cornellians (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_slug      TEXT NOT NULL REFERENCES companies(slug) ON DELETE CASCADE,
-    name              TEXT NOT NULL,
-    school            TEXT NOT NULL,
-    role              TEXT NOT NULL,
+    id                BIGINT PRIMARY KEY DEFAULT nextval('seq_cornellians'),
+    company_slug      VARCHAR NOT NULL REFERENCES companies(slug),
+    name              VARCHAR NOT NULL,
+    school            VARCHAR NOT NULL,
+    role              VARCHAR NOT NULL,
     grad_year         INTEGER,
-    role_at_company   TEXT NOT NULL,
-    evidence_span     TEXT NOT NULL,
-    source_url        TEXT NOT NULL,
+    role_at_company   VARCHAR NOT NULL,
+    evidence_span     VARCHAR NOT NULL,
+    source_url        VARCHAR NOT NULL,
     UNIQUE (company_slug, name)
 );
 
 CREATE TABLE candidates (
-    slug              TEXT PRIMARY KEY,
-    company_name      TEXT NOT NULL,
-    last_attempted_proof_url TEXT,
-    last_attempt_outcome TEXT,                 -- "unmatched" | "fetch_failed" | "schema_failed"
+    slug              VARCHAR PRIMARY KEY,
+    company_name      VARCHAR NOT NULL,
+    last_attempted_proof_url VARCHAR,
+    last_attempt_outcome VARCHAR,               -- "unmatched" | "fetch_failed" | "schema_failed"
     attempt_count     INTEGER NOT NULL DEFAULT 1,
-    first_attempt_at  TEXT NOT NULL,
-    last_attempt_at   TEXT NOT NULL,
-    candidate_payload TEXT NOT NULL            -- JSON: what we know so far (name, partial fields)
+    first_attempt_at  TIMESTAMP NOT NULL,
+    last_attempt_at   TIMESTAMP NOT NULL,
+    candidate_payload JSON NOT NULL              -- what we know so far (name, partial fields)
 );
 
 CREATE TABLE query_log (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp         TEXT NOT NULL,
-    engine            TEXT NOT NULL,
-    query             TEXT NOT NULL,
+    id                BIGINT PRIMARY KEY DEFAULT nextval('seq_query_log'),
+    timestamp         TIMESTAMP NOT NULL,
+    engine            VARCHAR NOT NULL,
+    query             VARCHAR NOT NULL,
     result_count      INTEGER NOT NULL,
-    outcome           TEXT NOT NULL,           -- "ok" | "empty" | "rate_limited" | "captcha" | "error"
+    outcome           VARCHAR NOT NULL,         -- "ok" | "empty" | "rate_limited" | "captcha" | "error"
     latency_ms        INTEGER NOT NULL
+);
+
+CREATE TABLE promotion_log (
+    id                BIGINT PRIMARY KEY DEFAULT nextval('seq_promotion_log'),
+    timestamp         TIMESTAMP NOT NULL,
+    slug              VARCHAR NOT NULL,
+    direction         VARCHAR NOT NULL,         -- "promoted" | "demoted"
+    reason            VARCHAR NOT NULL,
+    found_via_query   VARCHAR
 );
 
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL
+    applied_at TIMESTAMP NOT NULL
 );
-INSERT INTO schema_version VALUES (1, datetime('now'));
+INSERT INTO schema_version VALUES (1, CURRENT_TIMESTAMP);
 
 CREATE INDEX idx_companies_tier ON companies(validation_tier);
 CREATE INDEX idx_companies_founded ON companies(founded_year);
@@ -266,16 +281,22 @@ CREATE INDEX idx_cornellians_company ON cornellians(company_slug);
 CREATE INDEX idx_cornellians_name ON cornellians(name);
 CREATE INDEX idx_candidates_last_attempt ON candidates(last_attempt_at);
 CREATE INDEX idx_query_log_engine ON query_log(engine);
-
-PRAGMA journal_mode = WAL;   -- concurrent reader/writer safety
-PRAGMA foreign_keys = ON;
 ```
+
+DuckDB notes vs the SQLite version this replaced:
+
+- Native `JSON` type for `tags`, `validation_issues`, `non_cornell_cofounder_schools`, `candidate_payload`. Queryable via `json_extract(tags, '$[0]')`, `json_array_length(validation_issues)`, etc. No need to `loads()`/`dumps()` at the Python layer for these columns.
+- Native `BOOLEAN` for `is_public` (vs SQLite's int-as-bool).
+- Native `TIMESTAMP` for the time columns. No more text-encoded ISO strings.
+- `BIGINT GENERATED ALWAYS AS IDENTITY` via sequences (DuckDB doesn't have `AUTOINCREMENT`).
+- No `PRAGMA journal_mode = WAL` -- DuckDB's concurrency model is different. The `RecordStore` instance owns a single write connection; reads can be parallel via separate read-only connections.
+- Foreign keys: DuckDB supports them at table-creation time; `ON DELETE CASCADE` is supported. Enforcement is enabled by default.
 
 ### R2. `RecordStore` interface
 
 ```python
 class RecordStore:
-    """High-level interface over records.db. All methods are transactional."""
+    """High-level interface over records.duckdb. All methods are transactional."""
 
     def __init__(self, db_path: Path): ...
 
@@ -318,26 +339,26 @@ class RecordStore:
 
 ### R3. JSON export mirror
 
-`scripts/export_records_to_json.py` reads from SQLite and writes one JSON file per record to `startup_output/records/<slug>.json`. Plus `startup_output/candidates/<slug>.json` for candidates. Run on a schedule (cron-style, via the Doctor) or on-demand.
+`scripts/export_records_to_json.py` reads from DuckDB and writes one JSON file per record to `startup_output/records/<slug>.json`. Plus `startup_output/candidates/<slug>.json` for candidates. Run on a schedule (cron-style, via the Doctor) or on-demand.
 
-The JSON shape matches `StartupRecord.model_dump(mode="json")`. Git-trackable. Human-readable. Diff-friendly. The SQLite is the source of truth; the JSON is the audit log.
+The JSON shape matches `StartupRecord.model_dump(mode="json")`. Git-trackable. Human-readable. Diff-friendly. The DuckDB is the source of truth; the JSON is the audit log.
 
 ### R4. Migration from monolith
 
-One-shot script `scripts/migrate_monolith_to_sqlite.py`:
+One-shot script `scripts/migrate_monolith_to_duckdb.py`:
 
 1. Reads `startup_output_test/startups_db_deduped.json` (the 1,389-record deduped DB from yesterday's overnight work).
 2. Iterates each record, validates against `StartupRecord` (re-running the schema check).
 3. `RecordStore.upsert_record(rec)` for each. Skips records that fail Pydantic validation; logs to `migrate_skipped.jsonl`.
 4. Prints summary: inserted, skipped, by-reason.
 
-Idempotent. Run once at the start of v2 to seed the new SQLite from yesterday's work.
+Idempotent. Run once at the start of v2 to seed the new DuckDB from yesterday's work.
 
 ### R5. Analytics integration
 
 The existing `analyze_ecosystem.py`, `export_csv.py`, `export_network.py` migrate to use `RecordStore` instead of loading JSON files. Most queries become one-liners. `analyze_ecosystem.py` shrinks from ~250 lines to ~80. Network export shrinks similarly.
 
-The migrated scripts ship in this workstream so analytics never breaks during the SQLite cutover.
+The migrated scripts ship in this workstream so analytics never breaks during the DuckDB cutover.
 
 ## Workstream Q -- Query rung ladder
 
@@ -428,7 +449,7 @@ Recovery rounds slot into the existing round loop; the degradation ladder applie
 
 ### F3. Promotion logic
 
-`RecordStore.promote_candidate(slug, record)` runs as a single SQLite transaction:
+`RecordStore.promote_candidate(slug, record)` runs as a single DuckDB transaction:
 
 1. `DELETE FROM candidates WHERE slug = ?`
 2. `INSERT INTO companies (...) VALUES (...)`
@@ -476,7 +497,7 @@ From **S (Selenium primitives):**
 From **R (records store):**
 - `SchemaVersionCheck` -- `schema_version` table matches expected version → if not, refuse to continue (error).
 - `RecordRoundTripCheck` -- sample one record, validate against Pydantic → on failure, quarantine the row.
-- `DiskFreeCheck` -- free space on the records.db drive > threshold → warn.
+- `DiskFreeCheck` -- free space on the records.duckdb drive > threshold → warn.
 
 From **Q (query ladder):**
 - `EngineHealthCheck` -- per engine, success rate over last 50 calls > threshold → warn if any engine is degraded.
@@ -594,7 +615,7 @@ Tier table updates from the hardening pass to include v2-specific errors:
 | Skippable | Schema-invalid extraction, prompt-echo, marker missing, fail evidence-span | Log + add to candidates pool. Continue. |
 | Fatal (browser) | `BrowserUnavailable` after restart attempts | Trip ladder to BACKLOG; Doctor surfaces. |
 | Fatal (session) | LinkedIn `li_at` expired, Gemini login required | Doctor escalates to user via clear error; main loop pauses. |
-| Fatal (DB) | SQLite schema-version mismatch, corrupted DB | Doctor blocks the round; user runs migration script. |
+| Fatal (DB) | DuckDB schema-version mismatch, corrupted DB | Doctor blocks the round; user runs migration script. |
 | Fatal (process) | Every search engine cooled-down, no path forward | Ladder to HARD_STOP. |
 
 ## Testing
@@ -630,8 +651,8 @@ Existing test suite carries forward. v2 adds:
 
 One-shot at v2 start. Two scripts:
 
-1. `scripts/init_v2_layout.py` -- creates `startup_output/records.db` from schema.sql, creates `records/` and `candidates/` dirs.
-2. `scripts/migrate_monolith_to_sqlite.py` -- reads `startup_output_test/startups_db_deduped.json`, inserts 1,389 records.
+1. `scripts/init_v2_layout.py` -- creates `startup_output/records.duckdb` from schema.sql, creates `records/` and `candidates/` dirs.
+2. `scripts/migrate_monolith_to_duckdb.py` -- reads `startup_output_test/startups_db_deduped.json`, inserts 1,389 records.
 
 After both run, v2 is fully seeded. v1 artifacts (the monolith DB, the old logs) stay on disk untouched as backup.
 
@@ -653,7 +674,7 @@ Cited rather than re-derived:
 - [[~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md]] -- the four LinkedIn lessons. Workstream S's `BrowserSession` adopts the auth-mode JSON parser pattern; `CookieStore` adopts the per-domain pattern.
 - [[~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md]] -- the 50KB cliff and anonymous-mode lessons. Workstream S's `BrowserSession` enforces page-load timeouts at 120s for heavy pages; `gemini_session.py` shim preserves the existing input strategies.
 - [[~/.claude/web-agent-skills/wiki/primitives/cookie-persistence.md]] -- replaced by the new `CookieStore` primitive doc in S6.
-- [[~/.claude/web-agent-skills/wiki/primitives/resume-checkpoint.md]] -- "per-unit JSON files" -- we adopt the spirit (atomic per-record writes) via SQLite transactions plus a JSON export mirror.
+- [[~/.claude/web-agent-skills/wiki/primitives/resume-checkpoint.md]] -- "per-unit JSON files" -- we adopt the spirit (atomic per-record writes) via DuckDB transactions plus a JSON export mirror.
 - [[~/.claude/web-agent-skills/wiki/primitives/shared-browser-session.md]] -- the existing `BrowserSession` primitive is updated to match the new contract.
 - [[~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md]] -- the cookie-filter bug from yesterday is the canonical example; `CookieStore`'s explicit return-count signature prevents the same pattern.
 - [[~/.claude/web-agent-skills/wiki/anti-patterns/infinite-retry.md]] -- `retry_policy.py` (from hardening pass) is used by `QueryLadder` for per-engine retries.
