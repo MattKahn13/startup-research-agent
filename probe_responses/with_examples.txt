@@ -1,0 +1,4 @@
+JSON{
+  "records": [],
+  "notes": "The provided text contains a list of startups with their funding stages and short descriptions from a website named 'Big Red Startups', but it does not contain any verbatim substring names of individual Cornellians or specific 'evidence_spans' proving explicit Cornell affiliations for the listed companies within this text block."
+}

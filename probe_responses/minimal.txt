@@ -1,0 +1,4 @@
+JSON{
+  "records": [],
+  "notes": "The provided text contains a list of startup names, funding rounds, descriptions, and article links, but does not contain any details about the founders, co-founders, CEOs, CTOs, board members, employees, or their affiliations with Cornell University. Therefore, no companies match the criteria based on the strict rule requiring a verbatim evidence span from the text."
+}

@@ -1,0 +1,2 @@
+{"variant": "minimal", "outcome": "schema_invalid", "n_records": 0, "latency_s": 20.5, "response_chars": 407, "prompt_chars": 6840, "error": "parse_failed"}
+{"variant": "with_examples", "outcome": "schema_invalid", "n_records": 0, "latency_s": 18.1, "response_chars": 368, "prompt_chars": 6759, "error": "parse_failed"}

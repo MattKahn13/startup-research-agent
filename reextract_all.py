@@ -29,12 +29,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from schema import StartupRecord
 from startup_researcher import (
     scrape_page, _extract_pass1, _extract_pass2,
-    _normalise_name,
+    _normalise_name, start_gemini, stop_gemini,
 )
 
 
 _thread_local = threading.local()
 _driver_lock = threading.Lock()
+_gemini_lock = threading.Lock()   # Gemini browser session isn't thread-safe
 _shared_cache = None  # PageCache, initialized lazily
 
 
@@ -97,21 +98,23 @@ def reextract_one(rec: dict, out_dir: Path) -> tuple[str, str | dict]:
     if not text:
         return "fetch_failed", {"company": name, "url": url, "error": f"empty (status={fetch_status})"}
 
-    try:
-        pass1 = _extract_pass1(text, url)
-    except Exception as e:
-        return "schema_failed", {"company": name, "error": f"pass1: {e}"}
-    target = _normalise_name(name)
-    match = next((r for r in pass1 if _normalise_name(r.company_name) == target), None)
-    if match is None:
-        return "unmatched", {
-            "company": name, "url": url,
-            "found": [r.company_name for r in pass1][:10],
-        }
-    try:
-        match = _extract_pass2(match, text)
-    except Exception as e:
-        return "schema_failed", {"company": name, "error": f"pass2: {e}"}
+    # Serialize Gemini browser interactions across worker threads
+    with _gemini_lock:
+        try:
+            pass1 = _extract_pass1(text, url)
+        except Exception as e:
+            return "schema_failed", {"company": name, "error": f"pass1: {e}"}
+        target = _normalise_name(name)
+        match = next((r for r in pass1 if _normalise_name(r.company_name) == target), None)
+        if match is None:
+            return "unmatched", {
+                "company": name, "url": url,
+                "found": [r.company_name for r in pass1][:10],
+            }
+        try:
+            match = _extract_pass2(match, text)
+        except Exception as e:
+            return "schema_failed", {"company": name, "error": f"pass2: {e}"}
     return "ok", match.model_dump(mode="json")
 
 
@@ -138,6 +141,12 @@ def main(argv=None) -> int:
     todo = [r for r in records if _normalise_name(r.get("company_name", "")) not in existing]
     print(f"backfill: {len(todo)} of {len(records)} records remain to be re-extracted")
 
+    # Start the persistent Gemini browser session ONCE for the whole run.
+    # call_gemini() bails with a warning if this isn't done.
+    print("starting Gemini session...")
+    start_gemini()
+    print("Gemini session ready.")
+
     done = 0
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futs = {ex.submit(reextract_one, r, out.parent): r for r in todo}
@@ -158,6 +167,10 @@ def main(argv=None) -> int:
                 _failure_log(fail_dir / f"reextract_{status}.jsonl", payload)
     _save(out, existing)
     print(f"backfill complete: {done} new records in {out}")
+    try:
+        stop_gemini()
+    except Exception:
+        pass
     return 0
 
 
