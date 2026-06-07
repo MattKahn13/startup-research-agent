@@ -65,7 +65,19 @@ Landing order: **R first → S → Q → F**. R blocks everything else so that n
 
 ## Workstream S -- Selenium primitive set
 
-### S0. Research mini-spike (1 day, blocking)
+### S0a. Headed-minimized is the default
+
+Verified by `probe_headed_minimized.py` on 2026-06-07: undetected-chromedriver running in HEADED mode with `driver.minimize_window()` and `--window-position=-10000,-10000` survives Google search (4 of 5 queries clean; the one failure was a `site:linkedin.com/in/` abuse-pattern query that ALSO fails in headless), and survives LinkedIn `/in/` profile fetches without the "lite variant throttle" we attributed yesterday to a per-session rate limit (that throttle was actually the headless penalty).
+
+This reframes the rest of the spec. `BrowserSession` defaults to `headless=False`. Headless becomes an explicit opt-in flag for targets that have been verified not to fingerprint it. The wiki entry [[~/.claude/web-agent-skills/wiki/anti-patterns/headless-default.md]] is now the binding contract.
+
+Implications:
+
+- Process hygiene matters more, not less -- more visible windows means more chrome.exe processes to track. The minimize-window call has to be on the success path of every BrowserSession startup, not optional.
+- The Q workstream's "Selenium-Google as last resort" framing is wrong; see Q updates below.
+- The LinkedIn `/in/` retry-with-fresh-session pattern from yesterday's wiki lesson is no longer required. Just use headed-minimized and the throttle doesn't fire.
+
+### S0b. Research mini-spike (1 day, blocking)
 
 Before code, evaluate the base library choice. Today: `undetected-chromedriver`. Alternatives to assess:
 
@@ -86,7 +98,8 @@ class BrowserSession:
     """Wraps a single browser. Owns one process. Handles cleanup."""
 
     def __init__(self,
-                 headless: bool = True,
+                 headless: bool = False,            # default per S0a
+                 minimize: bool = True,             # only effective when headless=False
                  cookie_store: Optional["CookieStore"] = None,
                  page_load_timeout_s: int = 60,
                  script_timeout_s: int = 15):
@@ -392,26 +405,36 @@ All four use the `curl_cffi` library if S0 picks it, otherwise `urllib` with a r
 
 Per-engine state: cooldown timer if the engine rate-limits or 429s, exponential backoff with jitter via `retry_policy.py` (from the hardening pass).
 
-### Q3. Selenium-Google engine (rung 3)
+### Q3. Selenium-Google engine (primary for quality queries, not last-resort)
 
-`SeleniumGoogleEngine` wraps the existing Google-search logic from `startup_researcher.py` -- but now uses `BrowserSession` from Workstream S. CAPTCHA handling escalates per the wiki's `captcha-handoff.md` primitive (visible browser if interactive, skip if not).
+`SeleniumGoogleEngine` wraps Google search via `BrowserSession` (headed-minimized per S0a). Verified to work on routine queries -- the only failure mode in the 2026-06-07 probe was a `site:linkedin.com/in/` abuse-pattern query that fails in both headed and headless. CAPTCHA handling on the rare query that does trip detection: log the query as `outcome=captcha` and skip; if 3 consecutive queries hit CAPTCHA, the engine cools down for an hour and the ladder routes around it.
 
-### Q4. `QueryLadder` orchestrator
+Per-query overhead: ~3 seconds with Chrome startup amortized across a session. Acceptable for the per-round planner volume (10-30 queries) but slow for high-volume parallel lookups.
+
+### Q4. `QueryLadder` orchestrator -- engine selection by query intent, not fallback
 
 ```python
 class QueryLadder:
-    def __init__(self, engines: list[QueryEngine], record_store: RecordStore): ...
+    def __init__(self, engines: dict[str, QueryEngine], record_store: RecordStore): ...
 
-    def search(self, query: str, *, n_results: int = 10) -> list[SearchResult]:
-        """Tries engines in order. Each engine's outcome logs to query_log table.
-        Returns first non-empty result set. Raises NoEnginesAvailable only if
-        every engine is currently cooled-down or broken."""
+    def search(self, query: str, *, intent: str = "quality",
+                n_results: int = 10) -> list[SearchResult]:
+        """Routes to the right engine for the intent. Engines are not a strict
+        fallback chain anymore -- they have different strengths.
+
+        intent='quality': Selenium-Google headed. Best results for niche queries.
+                          Default for planner-generated research queries.
+        intent='speed':   DDGEngine (HTTP). Fast, parallelizable. Default for
+                          high-volume slug-discovery / verification lookups.
+        intent='diverse': Try DDG + Brave + Mojeek + Startpage in parallel, merge
+                          + dedupe results. For broad discovery.
+        """
         ...
 ```
 
-Default ladder order: `[DDGEngine, BraveEngine, MojeekEngine, StartpageEngine, SeleniumGoogleEngine]`.
+The 2026-06-07 probe inverted the old "fallback chain" framing. Selenium-Google headed is reliable for quality queries; the HTTP engines are reliable for high-volume cheap lookups. They serve different intents.
 
-The ladder respects per-engine cooldown. If DDG is rate-limited, the ladder skips it for the cooldown window and goes straight to Brave. When DDG recovers, it re-enters the ladder.
+When an engine fails for its intent, the ladder degrades to its next-best alternative for the same intent (Selenium-Google → DDG for quality; DDG → Brave → Mojeek for speed).
 
 ### Q5. Wiring into the planner
 
