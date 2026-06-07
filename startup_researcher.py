@@ -1042,14 +1042,57 @@ def _cookie_path() -> str:
     return os.path.abspath(COOKIE_FILE)
 
 
+_AUTH_MARKER_COOKIES = {
+    # Per-domain "this is a real session" marker. If the existing file has
+    # one of these and the new save doesn't, the save is refused -- per
+    # wiki/anti-patterns/silent-failure.md 2026-06-07 lesson.
+    "linkedin.com": "li_at",
+    "google.com": "__Secure-1PSID",
+}
+
+
+def _has_marker(cookies, marker_name, marker_domain):
+    return any(
+        c.get("name") == marker_name
+        and marker_domain in (c.get("domain") or "")
+        for c in cookies
+    )
+
+
 def save_cookies(driver, path: str | None = None):
-    """Persist all browser cookies to a JSON file."""
+    """Persist all browser cookies to a JSON file.
+
+    Refuses to overwrite an existing file when doing so would lose a known
+    auth marker (e.g. LinkedIn li_at). Prevents the no-op-login footgun
+    where a script with piped empty stdin saves pre-login junk over a valid
+    cookie file. See wiki/anti-patterns/silent-failure.md 2026-06-07.
+    """
     path = path or _cookie_path()
-    cookies = driver.get_cookies()
+    new_cookies = driver.get_cookies()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            for domain, marker in _AUTH_MARKER_COOKIES.items():
+                had_marker = _has_marker(existing, marker, domain)
+                has_marker = _has_marker(new_cookies, marker, domain)
+                if had_marker and not has_marker:
+                    log.warning(
+                        f"refusing to overwrite {path}: existing has "
+                        f"{marker!r} for {domain}, new does not. "
+                        f"Likely a no-op login."
+                    )
+                    UI.warn(
+                        f"Refused to overwrite cookies: would lose {marker} "
+                        f"for {domain}. New session may not be logged in."
+                    )
+                    return
+        except Exception as e:
+            log.warning(f"could not read existing cookie file for marker check: {e}")
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
-    log.info(f"Saved {len(cookies)} cookies → {path}")
-    UI.found(f"Saved {len(cookies)} cookies to {os.path.basename(path)}")
+        json.dump(new_cookies, f, ensure_ascii=False, indent=2)
+    log.info(f"Saved {len(new_cookies)} cookies → {path}")
+    UI.found(f"Saved {len(new_cookies)} cookies to {os.path.basename(path)}")
 
 
 def load_cookies(driver, path: str | None = None) -> bool:
