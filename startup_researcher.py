@@ -1835,6 +1835,13 @@ def _simple_chunk(text: str, size: int, overlap: int) -> list[str]:
     return chunks[:12]
 
 
+# Pass-2 inline enrichment: OFF by default (see extract_from_page). Set
+# EXTRACT_PASS2=1 to enable; only runs on pages yielding <= _PASS2_MAX_RECORDS
+# so a dedicated company page gets enriched but an aggregator doesn't stall.
+_PASS2_ENABLED = os.environ.get("EXTRACT_PASS2", "0") == "1"
+_PASS2_MAX_RECORDS = int(os.environ.get("EXTRACT_PASS2_MAX_RECORDS", "5"))
+
+
 def extract_from_page(page_text: str, source_url: str) -> list[StartupRecord]:
     """Two-pass extraction with degradation-aware schema mode.
 
@@ -1857,12 +1864,20 @@ def extract_from_page(page_text: str, source_url: str) -> list[StartupRecord]:
     seen_names: set[str] = set()
     for chunk in chunks:
         pass1 = _extract_pass1(chunk, source_url)
+        # Pass-2 enrichment fires a full Gemini call PER record (~minutes each).
+        # On aggregator pages that yield hundreds of companies it makes a round
+        # take many hours. Pass-1 already produces a complete, evidence-verified
+        # record (founders, school, proof_url, status, funding, year); pass-2
+        # only adds description/tags/URLs, which the Wikipedia+LinkedIn
+        # enrichment scripts also supply. So default pass-2 OFF and gate it on
+        # EXTRACT_PASS2=1 for runs that specifically want inline enrichment.
+        run_pass2 = _PASS2_ENABLED and level == Level.NORMAL and len(pass1) <= _PASS2_MAX_RECORDS
         for rec in pass1:
             key = _normalise_name(rec.company_name)
             if not key or key in seen_names:
                 continue
             seen_names.add(key)
-            if level == Level.NORMAL:
+            if run_pass2:
                 rec = _extract_pass2(rec, chunk)
             out.append(rec)
     return out
@@ -2742,8 +2757,12 @@ def scrape_seed_urls(
             for rec in records:
                 if db.upsert(rec):
                     new_count += 1
+            # Incremental save: a long round on a big aggregator page can be
+            # interrupted (crash, session teardown). Persist after each page so
+            # landed records survive. db.save() is retry-guarded internally.
+            db.save()
             UI.found(f"  Extracted {len(records)} records "
-                     f"({new_count} new so far)")
+                     f"({new_count} new so far, saved)")
         else:
             UI.warn("  No relevant records on this seed page")
         pages_scraped += 1
@@ -2805,8 +2824,11 @@ def execute_searches(
                             is_new = db.upsert(rec)
                             if is_new:
                                 new_count += 1
+                        # Incremental save so an interrupted round keeps its
+                        # landed records (retry-guarded internally).
+                        db.save()
                         UI.found(f"Extracted {len(records)} records "
-                                 f"({new_count} new so far)")
+                                 f"({new_count} new so far, saved)")
                     else:
                         UI.warn("No relevant records on this page")
                     consecutive_errors = 0
