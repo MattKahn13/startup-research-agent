@@ -1001,12 +1001,19 @@ def _prompt_with_focused_browser(driver, message: str) -> str:
 
     Returns whatever input() returned (caller can ignore). On EOFError /
     KeyboardInterrupt, re-raises so the caller's existing handlers fire.
+
+    UNATTENDED=1: skip the prompt entirely and return "" without touching the
+    window. Lets a detached background run proceed without a TTY (cookies must
+    already be loaded). This is what makes an overnight run survivable: no
+    stdin dependency means the process can be spawned fully detached.
     """
+    if os.environ.get("UNATTENDED") == "1":
+        return ""
     restored = False
     try:
         # `maximize_window` un-minimizes (Windows treats it as a Restore
         # from minimized) and is supported by every UC chromedriver build
-        # we've seen. Keep it cheap — don't focus tabs.
+        # we've seen. Keep it cheap: don't focus tabs.
         driver.maximize_window()
         restored = True
     except Exception:
