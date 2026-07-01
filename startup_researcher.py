@@ -1568,10 +1568,58 @@ _PARSE_FAIL_LOG_PATH: str = "gemini_parse_failures.log"
 _T = TypeVar("_T", bound=BaseModel)
 
 
+def _extract_json_payload(text: str) -> Optional[str]:
+    """Return the first balanced JSON object/array substring in `text`.
+
+    Tolerates a language-label prefix (Gemini renders a ```json code block, and
+    when we scrape innerText the backticks vanish but the label survives as a
+    bare 'JSON' prefix -> 'JSON{...}') and prose before/after the payload.
+
+    Scans bracket depth while respecting string literals + escapes so a `{` or
+    `}` inside an evidence_span string doesn't throw off the balance. Returns
+    the substring from the first opener to its matching closer, or None if no
+    opener is present. Truncated (unbalanced) input returns opener-to-end as a
+    best-effort payload.
+    """
+    if not text:
+        return None
+    start = None
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            start = i
+            break
+    if start is None:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    # Unbalanced / truncated -- best effort.
+    return text[start:]
+
+
 def _parse_json_typed(text: str, model_cls: Type[_T]) -> tuple[Optional[_T], str]:
     """Returns (model_instance, outcome_string).
 
-    outcome in {"parsed", "fence_extracted", "marker_sliced", "schema_invalid", "empty"}
+    outcome in {"parsed", "fence_extracted", "marker_sliced", "payload_extracted",
+                "schema_invalid", "empty"}
     """
     if not text or not text.strip():
         return None, "empty"
@@ -1594,12 +1642,28 @@ def _parse_json_typed(text: str, model_cls: Type[_T]) -> tuple[Optional[_T], str
             except (ValidationError, ValueError):
                 continue
 
-    # Try the raw sliced text
+    # Try the raw sliced text -- clean JSON parses here and keeps outcome "parsed".
     try:
         return model_cls.model_validate_json(sliced.strip()), outcome
-    except (ValidationError, ValueError) as e:
-        _log_parse_failure(text, model_cls, e)
-        return None, "schema_invalid"
+    except (ValidationError, ValueError):
+        pass
+
+    # Balanced-bracket payload extract. Handles the common 'JSON{...}' capture
+    # where Gemini's rendered code-block label leaks in but the backtick fence
+    # doesn't (so _FENCE_RE misses). Also strips prose before/after the JSON.
+    payload = _extract_json_payload(sliced)
+    if payload and payload.strip() != sliced.strip():
+        try:
+            return (
+                model_cls.model_validate_json(payload.strip()),
+                outcome if outcome != "parsed" else "payload_extracted",
+            )
+        except (ValidationError, ValueError) as e:
+            _log_parse_failure(text, model_cls, e)
+            return None, "schema_invalid"
+
+    _log_parse_failure(text, model_cls, "raw parse failed; no recoverable payload")
+    return None, "schema_invalid"
 
 
 def _log_parse_failure(text: str, model_cls, exc) -> None:
@@ -1807,7 +1871,12 @@ def extract_from_page(page_text: str, source_url: str) -> list[StartupRecord]:
 def _slice_and_unfence(text: str) -> str:
     sliced = text.rsplit(_END_OF_PROMPT_MARKER, 1)[1] if _END_OF_PROMPT_MARKER in text else text
     fences = _FENCE_RE.findall(sliced)
-    return max(fences, key=len) if fences else sliced.strip()
+    if fences:
+        return max(fences, key=len)
+    # No backtick fence -- handle the 'JSON{...}' label-prefix capture the same
+    # way _parse_json_typed does, so pass-2 field-fill parses too.
+    payload = _extract_json_payload(sliced)
+    return payload if payload else sliced.strip()
 
 
 def _parse_json(raw: str, fallback=None):
