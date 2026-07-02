@@ -1901,6 +1901,41 @@ def _slice_and_unfence(text: str) -> str:
     return payload if payload else sliced.strip()
 
 
+_KV_PREFIX_RE = re.compile(r'^(\s*"[a-zA-Z_][a-zA-Z0-9_]*"\s*:\s*)(.*)$')
+
+
+def _repair_unescaped_json_quotes(text: str) -> str:
+    """Best-effort repair for LLM-authored JSON where a string value contains
+    an unescaped interior double-quote -- a Google search phrase-match
+    operator ("Cornell University") or a person's nickname (Maofan "Ted" Yin)
+    embedded raw inside the value. Confirmed recurring in production despite
+    the prompt already instructing single quotes for phrase matching; prompt
+    compliance alone isn't reliable, so this is the parser-side backstop.
+
+    Heuristic, one "logical" line at a time: if the line looks like a
+    well-formed `"key": ` prefix, peel that off first (so the key's own
+    quotes are never touched). Whatever remains, if it has 4+ un-escaped
+    quote characters, treat the FIRST and LAST as the true string
+    delimiters and escape every quote strictly between them. This matches
+    Gemini's typical one-value-per-line pretty-printed JSON output; it is
+    NOT a general JSON5 parser.
+
+    See wiki/anti-patterns/llm-json-unescaped-quotes.md.
+    """
+    out_lines = []
+    for line in text.split("\n"):
+        m = _KV_PREFIX_RE.match(line)
+        prefix, rest = (m.group(1), m.group(2)) if m else ("", line)
+        quote_positions = [mm.start() for mm in re.finditer(r'(?<!\\)"', rest)]
+        if len(quote_positions) >= 4:
+            first, last = quote_positions[0], quote_positions[-1]
+            before, middle, after = rest[:first + 1], rest[first + 1:last], rest[last:]
+            middle_fixed = middle.replace('\\"', '"').replace('"', '\\"')
+            rest = before + middle_fixed + after
+        out_lines.append(prefix + rest)
+    return "\n".join(out_lines)
+
+
 def _parse_json(raw: str, fallback=None):
     cleaned = _clean_json(raw)
     try:
@@ -1912,8 +1947,15 @@ def _parse_json(raw: str, fallback=None):
         start = cleaned.find(opener)
         end = cleaned.rfind(closer)
         if start != -1 and end > start:
+            candidate = cleaned[start:end + 1]
             try:
-                return json.loads(cleaned[start:end + 1])
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+            # Second chance: the bracket boundaries are right but a string
+            # value inside has unescaped inner quotes -- try the repair pass.
+            try:
+                return json.loads(_repair_unescaped_json_quotes(candidate))
             except json.JSONDecodeError:
                 pass
     # Save the failed response for debugging
