@@ -26,7 +26,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 17:28 UTC | HEAD: 44e0dbb | status-HEAD: 44e0dbb
+_synced: 2026-07-02 17:29 UTC | HEAD: ea6269b | status-HEAD: 44e0dbb
 
 ## Status
 
@@ -83,6 +83,12 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
   `analyze_ecosystem.py`, `export_csv.py`, `export_network.py`. Report findings. Monitor
   `startup_output_overnight/startups_db.json` count + `run_detached.log`; process is PID 26172
   (see `startup_output_overnight/run_detached.pid`).
+- [ ] **Merge tonight's fresh run into the real 1,389-record dataset.** Tonight's run
+  (`startup_output_overnight/startups_db.json`) started from an EMPTY db on purpose (isolate the
+  parser-fix verification from the real dataset). It is NOT additive to `startup_output_test/
+  startups_db_deduped.json` (the 1,389, June 6-7) or `startup_output/startups_db.json` (the
+  original 1,525, May). Once the overnight run is done, dedupe-merge its new records into the 1,389
+  the same way `dedup_records.py` merged the original 1,525 -- by canonical company name.
 - [ ] **Fix the evidence_span mojibake** (non-blocking, cosmetic). Apostrophes render as
   UTF-8-as-Latin-1 garble (`MBA` + garbled char + `09`). Likely the page-scrape decode step; check
   `scrape_page`'s encoding detection. Doesn't break matching today but will look bad in any
@@ -104,6 +110,16 @@ The center of truth for **locked decisions and standing constraints**. Check her
 a settled question: if a tension is recorded resolved, reference it, don't re-litigate. Authored and
 preserved by the sync (never auto-rewritten).
 
+- **[2026-07-02] There are THREE separate dataset generations in THREE separate files -- they do
+  NOT merge automatically.** (1) `startup_output/startups_db.json` -- 1,525 records, the ORIGINAL
+  May production DB, old flat schema (`cornellian_founder` string, no evidence-span). (2)
+  `startup_output_test/startups_db_deduped.json` -- 1,389 records, the June 6-7 migrated + deduped
+  dataset (the REAL working dataset; ecosystem report / CSVs / network graph were built from this).
+  (3) `startup_output_overnight/startups_db.json` -- started from ZERO on 2026-07-02 on purpose, to
+  isolate verification of the parser-chain fix from the real dataset. It is NOT additive to (1) or
+  (2) until explicitly merged (see Next steps). Before answering "how many startups do we have,"
+  check WHICH file is being asked about -- "the tally" almost always means (2), not whatever the
+  most recent run produced.
 - **[2026-06-07] Headed-minimized is the binding default browser mode, not headless.** Empirically
   verified (`probe_headed_minimized.py`): undetected-chromedriver headed + `minimize_window()` +
   `--window-position=-10000,-10000` passed 4/5 Google queries (the 1 failure was a
@@ -215,6 +231,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- ea6269b docs(manifest): sync + confirm-status
 - 44e0dbb docs(manifest): CONFIRMED -- 60 records landed live; mark next-step done, add mojibake follow-up
 - f7d418f docs(manifest): sync + confirm-status
 - 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
@@ -226,5 +243,4 @@ preserved by the sync (never auto-rewritten).
 - 9e336f7 fix(researcher): recover records from Gemini's 'JSON{...}' label-prefix responses
 - 6ea92fd fix(researcher): refuse to overwrite cookie file when auth marker would be lost
 - d2e9a38 spec(v2): BrowserSession.handoff_for_captcha contract
-- ad89fa1 plan(v2): implementation plan (R, S, Q, F, D workstreams)
 <!-- /AUTO -->
