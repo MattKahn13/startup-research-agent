@@ -11,13 +11,13 @@
 scan:
   "Core pipeline (the agent)": ["startup_researcher.py", "gemini_tool.py", "schema.py", "evidence.py", "metrics.py", "degradation.py", "retry_policy.py", "url_canonical.py"]
   "Ops -- detached overnight launch": ["launch_detached.py", "run_detached.ps1"]
-  "Data layer -- migrate / dedup / analyze": ["migrate_to_v2_schema.py", "dedup_records.py", "analyze_ecosystem.py", "export_csv.py", "export_network.py", "reextract_all.py"]
+  "Data layer -- migrate / dedup / analyze": ["migrate_to_v2_schema.py", "dedup_records.py", "analyze_ecosystem.py", "export_csv.py", "export_network.py", "reextract_all.py", "repair_stranded_founders.py"]
   "Enrichment -- wikipedia + linkedin": ["enrich_wikipedia.py", "discover_via_wikipedia_categories.py", "linkedin_login.py", "parse_linkedin_auth.py"]
   "Probes (empirical findings)": ["probe_headed_minimized.py", "probe_linkedin.py", "probe_linkedin_auth.py", "probe_gemini.py"]
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -26,9 +26,44 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 17:29 UTC | HEAD: ea6269b | status-HEAD: 44e0dbb
+_synced: 2026-07-02 21:05 UTC | HEAD: 8843778 | status-HEAD: 8843778
 
 ## Status
+
+**2026-07-02 evening audit found and fixed a second silent data-loss bug in gap-fill, now confirmed
+live.** Requested audit ("see what issues exist, make repairs") turned up two real bugs, neither
+of which was the thing being watched for:
+
+1. **`fill_missing_data`/`gap_report` read and wrote the legacy `founders` field, not
+   `cornellian_founder`** -- the field `validate_record`/`upsert`/CSV export actually treat as
+   authoritative. A record could have a garbage `cornellian_founder` (self-flagged by its own
+   `validation_issues`) and gap-fill would never target it, because `gap_report` only checked
+   whether `founders` was empty. When gap-fill DID run and Gemini found the real name, it wrote
+   that name to `founders` -- a field nothing downstream reads -- so the console reported success
+   while `cornellian_founder` stayed wrong forever. Caught by inspecting a real record (Conceive:
+   `cornellian_founder="health providers"`, `founders=""`, both present with divergent values) and
+   confirmed with a deterministic mocked regression test showing the console "success" message
+   never actually persisting. Fixed all three call sites (`gap_report`, `fill_missing_data`,
+   the ambiguous-record completeness check) to read/write `cornellian_founder`.
+2. **Gemini's JSON responses periodically embed literal unescaped quotes inside a string value**
+   (a Google phrase-match operator like `"Cornell University"`, or a nickname like `Maofan "Ted"
+   Yin`), breaking `json.loads` at the string-literal level even though bracket boundaries are
+   correct -- a different failure mode than the label-prefix bug fixed 2026-06-11. Confirmed via
+   the actual captured raw response text (not assumed to be the same bug) before writing a fix.
+   Added `_repair_unescaped_json_quotes` as a third parse attempt in `_parse_json` (defense in
+   depth alongside the existing prompt instruction, which Gemini doesn't reliably follow).
+
+Both fixed under TDD (58/58 tests green, up from 51). **6 records that had already been correctly
+gap-filled under the old buggy code** (right answer sitting in the dead `founders` field) were
+recovered via a one-off script (`repair_stranded_founders.py`) rather than re-spending Gemini/
+Selenium budget re-discovering them -- e.g. Conceive -> Lauren Berson Sugarman, Hyro -> Israel
+Krush, xPub -> Pallavi Bansal. The live detached run was killed (PID 26172), the DB repaired
+in place, and relaunched (PID 27244) via the same `launch_detached.py` + kb-gate contract
+pattern; boot log confirmed a clean resume from the repaired 206-record file ("DB: 206 records
+loaded"). Post-restart the log shows zero recurrences of either bug's failure signature and
+normal extraction activity continuing. `.gitignore` also gained the two runtime-output dirs
+(`startup_output_overnight/`, `startup_output_test_headed/`) that were created mid-arc and
+untracked-but-not-ignored.
 
 **The agent runs headed-minimized without CAPTCHA and now actually lands records.** The
 long-standing "0 records despite hundreds of clean Gemini calls" symptom was a **parser bug**,
@@ -79,10 +114,13 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
 - [x] **Confirm the current detached run lands records.** DONE 2026-07-02 -- PID 26172 landed 60
   real evidence-verified records in ~15 min from bigredai/eship/tech.cornell.edu/elabstartup.com.
   The full chain is proven end to end.
-- [ ] **Let the overnight run complete**, then run the data layer over the fresh DB:
-  `analyze_ecosystem.py`, `export_csv.py`, `export_network.py`. Report findings. Monitor
-  `startup_output_overnight/startups_db.json` count + `run_detached.log`; process is PID 26172
-  (see `startup_output_overnight/run_detached.pid`).
+- [x] **Audit + repair the gap-fill field mismatch and the JSON quote-escaping failure.** DONE
+  2026-07-02 evening -- see Status. Both fixed under TDD, 6 records recovered, process restarted
+  clean as PID 27244.
+- [ ] **Let the overnight run complete** (now PID 27244, resumed from the repaired 206-record DB),
+  then run the data layer over the fresh DB: `analyze_ecosystem.py`, `export_csv.py`,
+  `export_network.py`. Report findings. Monitor `startup_output_overnight/startups_db.json` count
+  + `run_detached.log` (see `startup_output_overnight/run_detached.pid`).
 - [ ] **Merge tonight's fresh run into the real 1,389-record dataset.** Tonight's run
   (`startup_output_overnight/startups_db.json`) started from an EMPTY db on purpose (isolate the
   parser-fix verification from the real dataset). It is NOT additive to `startup_output_test/
@@ -110,6 +148,22 @@ The center of truth for **locked decisions and standing constraints**. Check her
 a settled question: if a tension is recorded resolved, reference it, don't re-litigate. Authored and
 preserved by the sync (never auto-rewritten).
 
+- **[2026-07-02] `cornellian_founder` is the single authoritative founder field everywhere --
+  `founders` is a legacy/secondary field that nothing downstream should read.** `validate_record`
+  requires `cornellian_founder`; `upsert`, tier scoring, and CSV export all read it too. Any new
+  code that discovers or repairs a founder name (gap-fill, enrichment, one-off scripts) must write
+  `cornellian_founder` (and may mirror into `founders` for legacy display, as `fill_missing_data`
+  now does) -- writing only `founders` is a silent no-op bug that looks like success in the console.
+  Reuse `_looks_like_human_name()` to judge whether a candidate value is real; it's already shared
+  by `validate_record`, `gap_report`, `fill_missing_data`, and the ambiguous-record check.
+- **[2026-07-02] JSON quote-repair is a THIRD, independent parse fallback -- do not conflate it with
+  the 2026-06-11 label-prefix fix.** `_parse_json` now tries a direct `json.loads` first, then a
+  balanced-bracket boundary extraction, then `_repair_unescaped_json_quotes` on the bracket-matched
+  candidate as a last resort. That third failure mode is Gemini embedding a literal unescaped `"`
+  inside a string value (search phrase-match operators, nicknames) -- bracket boundaries are fine,
+  the string literal itself is broken. Verify which failure mode you're looking at from the raw
+  captured text before assuming it's the same bug as before; they need different fixes. Wiki:
+  `anti-patterns/llm-json-unescaped-quotes.md`.
 - **[2026-07-02] There are THREE separate dataset generations in THREE separate files -- they do
   NOT merge automatically.** (1) `startup_output/startups_db.json` -- 1,525 records, the ORIGINAL
   May production DB, old flat schema (`cornellian_founder` string, no evidence-span). (2)
@@ -188,6 +242,7 @@ preserved by the sync (never auto-rewritten).
 - `export_csv.py` -- Export the deduped (or enriched) DB to a flat CSV for spreadsheet review
 - `export_network.py` -- Export the Cornell startup network as a graph:
 - `reextract_all.py` -- One-shot re-extraction of every record in startups_db
+- `repair_stranded_founders.py` -- One-off data repair: promote a record's legacy 'founders' value into
 
 **Enrichment -- wikipedia + linkedin**
 - `enrich_wikipedia.py` -- Enrich the deduped Cornell-startup DB with Wikipedia data: headquarters,
@@ -219,6 +274,8 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_parse_json.py` -- Gemini's rendered code-block language label ('JSON') leaks into the
 - `tests/test_schema.py`
 - `tests/test_db_upsert.py` -- The live flow passes DICTS (StartupRecord
+- `tests/test_gap_fill_field_consistency.py` -- Regression tests for the founders / cornellian_founder field-mismatch bug
+- `tests/test_json_quote_repair.py` -- Regression tests for the unescaped-inner-quotes JSON repair
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -231,6 +288,10 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
+- db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
+- b4007ee fix(gap-fill): read/write cornellian_founder, not the dead legacy 'founders' field
+- ae9b4ce docs(manifest): clarify the three separate dataset generations -- nothing was lost
 - ea6269b docs(manifest): sync + confirm-status
 - 44e0dbb docs(manifest): CONFIRMED -- 60 records landed live; mark next-step done, add mojibake follow-up
 - f7d418f docs(manifest): sync + confirm-status
@@ -239,8 +300,4 @@ preserved by the sync (never auto-rewritten).
 - 91c3f6f docs(manifest): add living PROJECT.md -- state-of-truth for compaction survival
 - 86ed419 feat(ops): detached-launch scripts for session-teardown-proof overnight runs
 - bdf0dd0 feat(researcher): UNATTENDED=1 skips interactive prompts for detached runs
-- 4e6858b perf(researcher): defer pass-2 by default + incremental DB save per page
-- 9e336f7 fix(researcher): recover records from Gemini's 'JSON{...}' label-prefix responses
-- 6ea92fd fix(researcher): refuse to overwrite cookie file when auth marker would be lost
-- d2e9a38 spec(v2): BrowserSession.handoff_for_captcha contract
 <!-- /AUTO -->
