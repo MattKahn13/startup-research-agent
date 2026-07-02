@@ -2206,8 +2206,20 @@ class StartupDB:
 
         for key, r in self.records.items():
             name = r.get("company_name", key)
-            f = (r.get("founders") or "").strip().lower()
-            if not f or f in ("unknown", "n/a", ""):
+            # cornellian_founder is the REQUIRED, authoritative field (see
+            # validate_record) -- flag it as missing if it's empty OR doesn't
+            # look like a real name (e.g. "health providers" leaked in from a
+            # bad extraction). Checking the legacy "founders" field here was a
+            # bug: a record could have a garbage cornellian_founder and never
+            # get targeted for gap-fill repair because founders happened to be
+            # separately non-empty (or the check was just on the wrong key).
+            cf = (r.get("cornellian_founder") or "").strip()
+            affiliation_type = (r.get("affiliation_type") or "").strip().lower()
+            cf_missing = (
+                (not cf and affiliation_type != "licensed tech")
+                or (cf and not _looks_like_human_name(cf))
+            )
+            if cf_missing:
                 missing_founders.append(name)
             u = (r.get("proof_url") or "").strip()
             if not u or u.lower() in ("unknown", "n/a", ""):
@@ -3044,8 +3056,11 @@ def fill_missing_data(
         if not rec:
             continue
 
-        needs_founders = (rec.get("founders", "").strip().lower()
-                          in ("", "unknown", "n/a"))
+        # Check cornellian_founder (the authoritative field validate_record
+        # requires), not the legacy "founders" field -- see gap_report for
+        # why. Same emptiness/human-name-shape check as validate_record.
+        _cf = (rec.get("cornellian_founder") or "").strip()
+        needs_founders = not _cf or not _looks_like_human_name(_cf)
         needs_url = not rec.get("proof_url", "").strip() or \
                     rec.get("proof_url", "").strip().lower() in ("unknown", "n/a")
 
@@ -3116,7 +3131,21 @@ def fill_missing_data(
 
                     if needs_founders and new_founders and \
                        new_founders.lower() not in ("unknown", "n/a", ""):
-                        rec["founders"] = new_founders
+                        # Write to cornellian_founder -- the REQUIRED field
+                        # validate_record/upsert/CSV-export actually read --
+                        # not just the legacy "founders" field. Take the first
+                        # name if Gemini returned several comma-separated.
+                        primary = new_founders.split(",")[0].strip()
+                        rec["cornellian_founder"] = primary
+                        rec["founders"] = new_founders  # keep the legacy field in sync too
+                        # Backfill affiliation_evidence if it's missing/too
+                        # short (validate_record requires >= 15 chars) so the
+                        # repaired founder name doesn't fail on a technicality.
+                        existing_evidence = (rec.get("affiliation_evidence") or "").strip()
+                        if len(existing_evidence) < 15:
+                            rec["affiliation_evidence"] = (
+                                f"Found via targeted gap-fill search: {text[:200].strip()}"
+                            )
                         needs_founders = False
                         record_was_updated = True
                         UI.found(f"  → Founders: {new_founders}")
@@ -3222,10 +3251,11 @@ def _heuristic_verify(db: StartupDB) -> tuple[list[str], list[dict]]:
             desc = (rec.get("description") or "").lower()
             aff = (rec.get("affiliation_type") or "").lower()
 
-            # Flag records with no affiliation evidence and vague/missing data
+            # Flag records with no affiliation evidence and vague/missing data.
+            # Check cornellian_founder (the authoritative field), not the
+            # legacy "founders" field -- consistent with gap_report/fill_missing_data.
             has_evidence = bool(rec.get("affiliation_evidence", "").strip())
-            has_founders = (rec.get("founders", "Unknown") not in
-                           ("Unknown", "unknown", "", "N/A"))
+            has_founders = _looks_like_human_name((rec.get("cornellian_founder") or "").strip())
             has_proof = bool(rec.get("proof_url", "").strip())
 
             # If we have no affiliation evidence AND no founders AND no proof URL,
