@@ -26,7 +26,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 21:40 UTC | HEAD: 8ca19e9 | status-HEAD: 8ca19e9
+_synced: 2026-07-02 22:15 UTC | HEAD: 2cbebaf | status-HEAD: 2cbebaf
 
 ## Status
 
@@ -143,6 +143,19 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
   clean as PID 27244.
 - [x] **Root-cause + fix the shape-confusion crash that killed PID 27244.** DONE 2026-07-02 ~17:40
   UTC -- see Status. `_parse_json` gained an `expect_type` guard; relaunched clean as PID 26408.
+- [ ] **Extend incremental per-page `db.save()` to `execute_searches_parallel`.** Found during the
+  2026-07-02 ~18:12 UTC steady-state check: the main parallel round loop only calls `db.save()`
+  ONCE, after the entire round finishes (in `run()`, right after `execute_searches_parallel`
+  returns) -- unlike the seed-URL flow (line ~2866) and the serial flow (line ~2932), which both
+  save after every page. In-memory `new_count` was climbing mid-round (confirmed: "+6 new total")
+  while the on-disk file stayed flat at 273 for 30+ min, because nothing had flushed yet. Not a bug
+  right now (nothing crashed), but it reopens exactly the mid-round-loss risk the "incremental save"
+  fix was supposed to close everywhere -- a crash mid-round in THIS path would still lose everything
+  found since the last round boundary. Fix: move `db.save()` inside the drain loop (e.g. every page,
+  or every K new records) in `execute_searches_parallel`, same pattern as the other two flows.
+  Deliberately NOT applied live tonight -- doing so requires killing the currently-healthy PID 26408
+  mid-round, which would itself lose this round's not-yet-saved progress (the exact thing being
+  fixed). Apply next time the process needs restarting anyway, or on explicit go-ahead.
 - [ ] **Let the overnight run complete** (now PID 26408, resumed from the 273-record DB -- no data
   lost across either restart), then run the data layer over the fresh DB: `analyze_ecosystem.py`,
   `export_csv.py`, `export_network.py`. Report findings. Monitor
@@ -327,6 +340,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 2cbebaf docs(manifest): sync + confirm-status
 - 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
 - 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
 - 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
@@ -338,5 +352,4 @@ preserved by the sync (never auto-rewritten).
 - f7d418f docs(manifest): sync + confirm-status
 - 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
 - cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
-- 91c3f6f docs(manifest): add living PROJECT.md -- state-of-truth for compaction survival
 <!-- /AUTO -->
