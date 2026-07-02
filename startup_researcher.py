@@ -1936,10 +1936,29 @@ def _repair_unescaped_json_quotes(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def _parse_json(raw: str, fallback=None):
+def _parse_json(raw: str, fallback=None, expect_type=None):
+    """Parse JSON out of an LLM's raw text response.
+
+    `expect_type` (e.g. `dict` or `list`) guards against shape confusion in
+    the bracket-boundary fallback below: that fallback tries array
+    boundaries before object boundaries (existing callers that always want
+    a bare list, like extraction, rely on this order). But several other
+    callers always expect a dict that WRAPS a nested array (e.g.
+    `{"thinking": ..., "actions": [...]}`). If the direct whole-text parse
+    fails -- e.g. because of leading prose -- the array-boundary search can
+    find the *inner* array's own brackets first and silently return just
+    that list instead of the outer dict. When `expect_type` is given, a
+    successful parse of the wrong type is treated as a failed attempt and
+    the search keeps going instead of returning the mismatched value.
+    """
+    def _matches(value):
+        return expect_type is None or isinstance(value, expect_type)
+
     cleaned = _clean_json(raw)
     try:
-        return json.loads(cleaned)
+        direct = json.loads(cleaned)
+        if _matches(direct):
+            return direct
     except json.JSONDecodeError:
         pass
     # Try to find the outermost JSON structure
@@ -1949,13 +1968,17 @@ def _parse_json(raw: str, fallback=None):
         if start != -1 and end > start:
             candidate = cleaned[start:end + 1]
             try:
-                return json.loads(candidate)
+                parsed = json.loads(candidate)
+                if _matches(parsed):
+                    return parsed
             except json.JSONDecodeError:
                 pass
             # Second chance: the bracket boundaries are right but a string
             # value inside has unescaped inner quotes -- try the repair pass.
             try:
-                return json.loads(_repair_unescaped_json_quotes(candidate))
+                parsed = json.loads(_repair_unescaped_json_quotes(candidate))
+                if _matches(parsed):
+                    return parsed
             except json.JSONDecodeError:
                 pass
     # Save the failed response for debugging
@@ -2796,7 +2819,7 @@ def generate_gap_filling_strategy(
         "thinking": "Strategy generation failed.",
         "status": "complete",
         "actions": [],
-    })
+    }, expect_type=dict)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3162,7 +3185,7 @@ def fill_missing_data(
 
                 try:
                     raw = call_gemini(fill_prompt, label=f"Gemini (Fill: {company_name})")
-                    result = _parse_json(raw, fallback={})
+                    result = _parse_json(raw, fallback={}, expect_type=dict)
 
                     if not result.get("found_useful_info"):
                         continue
@@ -3386,7 +3409,7 @@ def _gemini_verify_batch(
 
         try:
             raw = call_gemini(verify_prompt, label="Gemini (Verify Batch)")
-            result = _parse_json(raw, fallback={"decisions": []})
+            result = _parse_json(raw, fallback={"decisions": []}, expect_type=dict)
             decisions = result.get("decisions", [])
 
             for d in decisions:

@@ -17,7 +17,7 @@ scan:
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -26,9 +26,33 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 21:05 UTC | HEAD: 8843778 | status-HEAD: 8843778
+_synced: 2026-07-02 21:39 UTC | HEAD: 7d1d5cf | status-HEAD: 7d1d5cf
 
 ## Status
+
+**2026-07-02 ~17:21 UTC: the relaunched run crashed for real (not a regression of the two bugs
+fixed a few hours earlier) -- root-caused, fixed, relaunched clean as PID 26408.** Monitoring
+after the evening audit found PID 27244 dead with an uncaught exception:
+`AttributeError: 'list' object has no attribute 'get'` in `run()` at `strategy.get("thinking", "")`.
+Traced to `_parse_json`'s bracket-boundary fallback, which tries array boundaries (`[`...`]`)
+before object boundaries (`{`...`}`) -- correct for the extraction caller ("try array first since
+we expect arrays from extract", per its own comment) but wrong for `generate_gap_filling_strategy`,
+which always expects a dict wrapping a nested `actions` array. Whenever Gemini's raw text has any
+prose before the real JSON object (e.g. "Here is my analysis.\n\n{...}"), the direct whole-text
+parse fails on the prose, and the array-first fallback finds the *inner* `actions` array's own
+brackets before the outer object's -- silently returning just that list. Isolated with a clean,
+one-variable repro containing zero quote-escaping issues, proving this is unrelated to tonight's
+earlier quote-repair fix; it's a pre-existing latent ordering flaw that just hadn't been hit before.
+Grep'd all four `_parse_json` call sites and found the SAME vulnerability latent in two more places
+(`fill_missing_data`'s per-record fill result, the verify-batch `{"decisions": [...]}` call) that
+hadn't crashed yet only by luck. Fixed once, centrally: `_parse_json` now takes an optional
+`expect_type` hint; a successful parse of the wrong type is treated as a failed attempt and the
+search keeps going (through the other bracket order, then quote-repair, then the caller's
+`fallback`) instead of returning the mismatched value. All three dict-expecting call sites now pass
+`expect_type=dict`; the one array-expecting caller (extraction) is untouched. TDD, 4 new tests,
+62/62 green. No data lost -- the crash happened after Round 1's `db.save()` (273 records on disk,
+confirmed before relaunch); the crash log was copied to
+`run_detached.log.crash-20260702-1721` before the relaunch overwrote it.
 
 **2026-07-02 evening audit found and fixed a second silent data-loss bug in gap-fill, now confirmed
 live.** Requested audit ("see what issues exist, make repairs") turned up two real bugs, neither
@@ -117,10 +141,13 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
 - [x] **Audit + repair the gap-fill field mismatch and the JSON quote-escaping failure.** DONE
   2026-07-02 evening -- see Status. Both fixed under TDD, 6 records recovered, process restarted
   clean as PID 27244.
-- [ ] **Let the overnight run complete** (now PID 27244, resumed from the repaired 206-record DB),
-  then run the data layer over the fresh DB: `analyze_ecosystem.py`, `export_csv.py`,
-  `export_network.py`. Report findings. Monitor `startup_output_overnight/startups_db.json` count
-  + `run_detached.log` (see `startup_output_overnight/run_detached.pid`).
+- [x] **Root-cause + fix the shape-confusion crash that killed PID 27244.** DONE 2026-07-02 ~17:40
+  UTC -- see Status. `_parse_json` gained an `expect_type` guard; relaunched clean as PID 26408.
+- [ ] **Let the overnight run complete** (now PID 26408, resumed from the 273-record DB -- no data
+  lost across either restart), then run the data layer over the fresh DB: `analyze_ecosystem.py`,
+  `export_csv.py`, `export_network.py`. Report findings. Monitor
+  `startup_output_overnight/startups_db.json` count + `run_detached.log` (see
+  `startup_output_overnight/run_detached.pid`).
 - [ ] **Merge tonight's fresh run into the real 1,389-record dataset.** Tonight's run
   (`startup_output_overnight/startups_db.json`) started from an EMPTY db on purpose (isolate the
   parser-fix verification from the real dataset). It is NOT additive to `startup_output_test/
@@ -148,6 +175,17 @@ The center of truth for **locked decisions and standing constraints**. Check her
 a settled question: if a tension is recorded resolved, reference it, don't re-litigate. Authored and
 preserved by the sync (never auto-rewritten).
 
+- **[2026-07-02] Any shared JSON-repair helper needs to know what SHAPE the caller expects, not
+  just how to recover valid JSON.** `_parse_json` is called by four different places: one always
+  wants a bare list (extraction), three always want a dict wrapping a nested array
+  (`generate_gap_filling_strategy`, `fill_missing_data`'s fill result, the verify-batch decisions).
+  Its bracket-boundary fallback tries array boundaries before object boundaries -- right for the
+  first caller, wrong for the other three, and the failure is silent: it returns a real, validly
+  parsed value of the WRONG type (the nested `actions` list instead of the wrapping dict) rather
+  than raising or falling back, so it crashes downstream instead of at the parse site. Fixed with
+  an `expect_type` parameter -- a parse of the wrong type is treated as no-match and the search
+  continues. Any NEW caller of `_parse_json` that expects a dict must pass `expect_type=dict`;
+  don't assume the default bracket order is safe just because parsing "succeeds."
 - **[2026-07-02] `cornellian_founder` is the single authoritative founder field everywhere --
   `founders` is a legacy/secondary field that nothing downstream should read.** `validate_record`
   requires `cornellian_founder`; `upsert`, tier scoring, and CSV export all read it too. Any new
@@ -276,6 +314,7 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_db_upsert.py` -- The live flow passes DICTS (StartupRecord
 - `tests/test_gap_fill_field_consistency.py` -- Regression tests for the founders / cornellian_founder field-mismatch bug
 - `tests/test_json_quote_repair.py` -- Regression tests for the unescaped-inner-quotes JSON repair
+- `tests/test_parse_json_shape_confusion.py` -- Regression tests for a shape-confusion crash in `_parse_json`
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -288,6 +327,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
 - 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
 - db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
 - b4007ee fix(gap-fill): read/write cornellian_founder, not the dead legacy 'founders' field
@@ -299,5 +339,4 @@ preserved by the sync (never auto-rewritten).
 - cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
 - 91c3f6f docs(manifest): add living PROJECT.md -- state-of-truth for compaction survival
 - 86ed419 feat(ops): detached-launch scripts for session-teardown-proof overnight runs
-- bdf0dd0 feat(researcher): UNATTENDED=1 skips interactive prompts for detached runs
 <!-- /AUTO -->
