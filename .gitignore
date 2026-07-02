@@ -5,6 +5,10 @@ browser_cookies.json
 startup_checkpoint.json
 startup_output/
 startup_output_test/
+startup_output_overnight/
+startup_output_test_headed/
+run_detached.pid
+browser_cookies.json.bak*
 gemini_parse_failures.log
 gemini_tool.log
 startup_researcher.log
