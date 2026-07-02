@@ -26,7 +26,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 17:10 UTC | HEAD: 85b5f4d | status-HEAD: 85b5f4d
+_synced: 2026-07-02 17:11 UTC | HEAD: f7d418f | status-HEAD: 85b5f4d
 
 ## Status
 
@@ -52,8 +52,15 @@ runs die on Claude-session teardown (killed 3 overnight attempts mid-round) -- *
 string, but `extract_startups` dumps new-schema dicts carrying a `cornellians` LIST -- so all 78
 evidence-verified records from the first successful run were rejected as "no Cornellian founder
 identified". Fixed: upsert backfills the legacy fields from `cornellians[0]` and accepts a
-non-empty list. The full chain (parser -> evidence-span -> pass-1 -> upsert -> save) is now proven
-end to end (51 tests green; a detached run is verifying live that records land).
+non-empty list.
+
+**CONFIRMED LIVE (2026-07-02 ~13:25 UTC):** the full chain (parser -> evidence-span -> pass-1 ->
+upsert -> save) works end to end. Detached run PID 26172 landed **60 real records** in the first
+~15 min (Sage/Raj Mehra, OpenEvidence/Zachary Ziegler, Hermeus/Michael Smayda, ... sourced from
+bigredai + eship.cornell.edu + tech.cornell.edu + elabstartup.com), each with a matched
+`evidence_span` and `proof_url`. 51 tests green. Known cosmetic bug (non-blocking): apostrophes in
+evidence spans render as UTF-8-as-Latin-1 mojibake (`MBA` + garbled apostrophe + `09` instead of
+`MBA '09`) -- doesn't break evidence-span matching, tracked as a follow-up.
 
 The **v2 architecture is spec'd + planned but NOT built**: DuckDB store (lands first), intent-routed
 query ladder (Selenium-Google-headed for quality + DDG/Brave/Mojeek/Startpage HTTP for speed),
@@ -69,12 +76,17 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
 
 ## Next steps
 
-- [ ] **Confirm the current detached run landed records.** `startup_output_overnight/startups_db.json`
-  count should climb past 0 (bigredai alone ~250). Ground-truth signal is that file's mtime + count.
-  If it stalls, read `startup_output_overnight/run_detached.log` (note: startup can take ~12 min when
-  undetected-chromedriver patches a new Chrome major).
-- [ ] **Let a full overnight run complete**, then run the data layer over the fresh DB:
-  `analyze_ecosystem.py`, `export_csv.py`, `export_network.py`. Report findings.
+- [x] **Confirm the current detached run lands records.** DONE 2026-07-02 -- PID 26172 landed 60
+  real evidence-verified records in ~15 min from bigredai/eship/tech.cornell.edu/elabstartup.com.
+  The full chain is proven end to end.
+- [ ] **Let the overnight run complete**, then run the data layer over the fresh DB:
+  `analyze_ecosystem.py`, `export_csv.py`, `export_network.py`. Report findings. Monitor
+  `startup_output_overnight/startups_db.json` count + `run_detached.log`; process is PID 26172
+  (see `startup_output_overnight/run_detached.pid`).
+- [ ] **Fix the evidence_span mojibake** (non-blocking, cosmetic). Apostrophes render as
+  UTF-8-as-Latin-1 garble (`MBA` + garbled char + `09`). Likely the page-scrape decode step; check
+  `scrape_page`'s encoding detection. Doesn't break matching today but will look bad in any
+  client-facing export.
 - [ ] **Enrichment pass** (free, no CAPTCHA): `enrich_wikipedia.py` for founded_year/HQ/status on
   high-profile companies; `parse_linkedin_auth.py` (auth-mode, headed) for employee_count / HQ /
   founder headlines. Both are built and probe-verified; not yet wired into the main loop.
@@ -203,6 +215,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- f7d418f docs(manifest): sync + confirm-status
 - 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
 - cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
 - 91c3f6f docs(manifest): add living PROJECT.md -- state-of-truth for compaction survival
@@ -214,5 +227,4 @@ preserved by the sync (never auto-rewritten).
 - d2e9a38 spec(v2): BrowserSession.handoff_for_captcha contract
 - ad89fa1 plan(v2): implementation plan (R, S, Q, F, D workstreams)
 - 51900ad spec(v2): empirical headed-minimized probe + Q workstream rework
-- 5d0d2ed spec: switch v2 store to DuckDB; R-first landing order
 <!-- /AUTO -->
