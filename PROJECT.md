@@ -41,13 +41,19 @@ present in the source page -- were silently thrown to `gemini_parse_failures.log
 balanced-bracket payload extractor (`_extract_json_payload`) wired into `_parse_json_typed` +
 `_slice_and_unfence`. Verified live: real parse failures dropped **390 -> 1**.
 
-Fixing that exposed two more issues, both now fixed: pass-2 enrichment fired a ~3-min Gemini call
-PER record (bigredai's ~300 companies -> ~15h round 1), so **pass-2 is deferred by default**
-(`EXTRACT_PASS2=0`; pass-1 already yields complete evidence-verified records). And the DB was
-saved only at end-of-round, so a mid-round interruption lost everything -- now it **saves
-incrementally after every page**. Finally, background runs launched via the shell die when the
-Claude session tears down (this killed three overnight attempts mid-round); **`launch_detached.py`
+Fixing that exposed a CHAIN of downstream gates that each silently ate records, all now fixed:
+(1) pass-2 enrichment fired a ~3-min Gemini call PER record (bigredai's ~300 companies -> ~15h
+round 1), so **pass-2 is deferred by default** (`EXTRACT_PASS2=0`; pass-1 already yields complete
+evidence-verified records). (2) the DB was saved only at end-of-round, so a mid-round interruption
+lost everything -- now it **saves incrementally after every page**. (3) shell-launched background
+runs die on Claude-session teardown (killed 3 overnight attempts mid-round) -- **`launch_detached.py`
 + `UNATTENDED=1`** spawns the agent fully detached (Windows `DETACHED_PROCESS`) so it survives.
+(4) **the LAST gate**: `db.upsert`'s legacy dict branch required the OLD `cornellian_founder`
+string, but `extract_startups` dumps new-schema dicts carrying a `cornellians` LIST -- so all 78
+evidence-verified records from the first successful run were rejected as "no Cornellian founder
+identified". Fixed: upsert backfills the legacy fields from `cornellians[0]` and accepts a
+non-empty list. The full chain (parser -> evidence-span -> pass-1 -> upsert -> save) is now proven
+end to end (51 tests green; a detached run is verifying live that records land).
 
 The **v2 architecture is spec'd + planned but NOT built**: DuckDB store (lands first), intent-routed
 query ladder (Selenium-Google-headed for quality + DDG/Brave/Mojeek/Startpage HTTP for speed),
@@ -119,6 +125,14 @@ preserved by the sync (never auto-rewritten).
   bigredai.org/startups DOES state founders + Cornell affiliation inline ("Raj Mehra, MBA '09").
   Confirmed the evidence spans Gemini returns are `span_present` in the cached page. Don't conclude
   "the source lacks evidence" without checking the parse path first.
+- **[2026-07-02] The hardening pass left a schema seam: `extract_startups` dumps StartupRecord to
+  DICTS, which hit `db.upsert`'s LEGACY dict branch, not the model-aware Pydantic branch.** That
+  legacy branch (blocklist gate, `cornellian_founder` hard rule, `RECORD_FIELDS` merge) expects the
+  OLD flat schema. A new-schema dict must be made legacy-compatible at the branch boundary (backfill
+  `cornellian_founder` / `affiliation_*` from `cornellians[0]`). Tests that pass Pydantic OBJECTS
+  hit the other branch and hide this whole class of bug -- test the DICT path explicitly. Deeper fix
+  (deferred): retire the dict shim and pass models end to end, or fully port the legacy branch onto
+  the new schema.
 - **[2026-06-05] Reusable scraping lessons live in the web-agent-skills wiki, not here.** Capture via
   `/lesson`. This repo's PROJECT.md points at them; it does not duplicate them.
 
