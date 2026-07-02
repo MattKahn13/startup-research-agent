@@ -2103,10 +2103,29 @@ class StartupDB:
             log.info(f"Blocked insert: {reason}")
             return False
 
-        # ── Hard rule: must have a cornellian_founder OR be Licensed Tech
+        # ── New-schema compatibility: records dumped from StartupRecord carry a
+        # `cornellians` list (evidence-span verified in pass-1) but NOT the old
+        # `cornellian_founder` string. Backfill the legacy fields from the list
+        # so the hard rule below and downstream legacy readers (gap report, CSV,
+        # validate_record) work. Without this, every evidence-verified record is
+        # rejected as "no Cornellian founder identified" (the bug that blocked 78
+        # bigredai records on 2026-07-01).
+        corns = record.get("cornellians") or []
+        if corns and not (record.get("cornellian_founder") or "").strip():
+            first = corns[0] if isinstance(corns[0], dict) else {}
+            record["cornellian_founder"] = first.get("name", "") or ", ".join(
+                c.get("name", "") for c in corns if isinstance(c, dict) and c.get("name")
+            )
+            if not record.get("affiliation_evidence"):
+                record["affiliation_evidence"] = first.get("evidence_span", "")
+            if not record.get("affiliation_type"):
+                record["affiliation_type"] = (first.get("role") or "alumnus").title()
+
+        # ── Hard rule: must have a Cornellian founder OR be Licensed Tech.
         cf = (record.get("cornellian_founder") or "").strip()
+        has_cornellians = bool(corns)
         aff = (record.get("affiliation_type") or "").strip().lower()
-        if not cf and aff != "licensed tech":
+        if not cf and not has_cornellians and aff != "licensed tech":
             log.info(f"Blocked insert (no Cornellian founder identified): {name}")
             return False
 

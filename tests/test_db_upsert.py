@@ -23,6 +23,22 @@ def test_first_upsert_creates(tmp_path):
     assert len(db.records) == 1
 
 
+def test_upsert_accepts_new_schema_dict(tmp_path):
+    """The live flow passes DICTS (StartupRecord.model_dump), which hit the
+    legacy dict branch. A new-schema dict has a `cornellians` list but NOT the
+    old `cornellian_founder` string; the hard-rule gate must accept it. This is
+    the bug that blocked 78 evidence-verified bigredai records: all rejected as
+    'no Cornellian founder identified'.
+    """
+    db = StartupDB(tmp_path / "db.json")
+    rec_dict = _rec(name="Sage").model_dump(mode="json")
+    assert "cornellian_founder" not in rec_dict or not rec_dict.get("cornellian_founder")
+    assert rec_dict["cornellians"], "fixture should carry a cornellians list"
+    is_new = db.upsert(rec_dict)
+    assert is_new is True
+    assert "sage" in db.records
+
+
 def test_upsert_unions_cornellians(tmp_path):
     db = StartupDB(tmp_path / "db.json")
     db.upsert(_rec(cornellians=[_aff("Alice")]))
