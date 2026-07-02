@@ -26,7 +26,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 17:11 UTC | HEAD: f7d418f | status-HEAD: 85b5f4d
+_synced: 2026-07-02 17:28 UTC | HEAD: 44e0dbb | status-HEAD: 44e0dbb
 
 ## Status
 
@@ -215,6 +215,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 44e0dbb docs(manifest): CONFIRMED -- 60 records landed live; mark next-step done, add mojibake follow-up
 - f7d418f docs(manifest): sync + confirm-status
 - 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
 - cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
@@ -226,5 +227,4 @@ preserved by the sync (never auto-rewritten).
 - 6ea92fd fix(researcher): refuse to overwrite cookie file when auth marker would be lost
 - d2e9a38 spec(v2): BrowserSession.handoff_for_captcha contract
 - ad89fa1 plan(v2): implementation plan (R, S, Q, F, D workstreams)
-- 51900ad spec(v2): empirical headed-minimized probe + Q workstream rework
 <!-- /AUTO -->
