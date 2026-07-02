@@ -26,7 +26,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-01 20:43 UTC | HEAD: 86ed419 | status-HEAD: 86ed419
+_synced: 2026-07-02 17:10 UTC | HEAD: 85b5f4d | status-HEAD: 85b5f4d
 
 ## Status
 
@@ -190,7 +190,7 @@ preserved by the sync (never auto-rewritten).
 **Tests**
 - `tests/test_parse_json.py` -- Gemini's rendered code-block language label ('JSON') leaks into the
 - `tests/test_schema.py`
-- `tests/test_db_upsert.py`
+- `tests/test_db_upsert.py` -- The live flow passes DICTS (StartupRecord
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -203,6 +203,9 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
+- cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
+- 91c3f6f docs(manifest): add living PROJECT.md -- state-of-truth for compaction survival
 - 86ed419 feat(ops): detached-launch scripts for session-teardown-proof overnight runs
 - bdf0dd0 feat(researcher): UNATTENDED=1 skips interactive prompts for detached runs
 - 4e6858b perf(researcher): defer pass-2 by default + incremental DB save per page
@@ -212,7 +215,4 @@ preserved by the sync (never auto-rewritten).
 - ad89fa1 plan(v2): implementation plan (R, S, Q, F, D workstreams)
 - 51900ad spec(v2): empirical headed-minimized probe + Q workstream rework
 - 5d0d2ed spec: switch v2 store to DuckDB; R-first landing order
-- 200a60a spec: research-agent v2 (Selenium audit, query ladder, SQLite store, recovery flow, Doctor)
-- 583ff75 feat(linkedin): auth-mode probe + JSON parser, working company extractor
-- 88163cb docs(overnight): summary report + network/discovery scripts
 <!-- /AUTO -->
