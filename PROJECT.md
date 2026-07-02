@@ -26,7 +26,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 21:39 UTC | HEAD: 7d1d5cf | status-HEAD: 7d1d5cf
+_synced: 2026-07-02 21:40 UTC | HEAD: 8ca19e9 | status-HEAD: 8ca19e9
 
 ## Status
 
@@ -327,6 +327,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
 - 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
 - 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
 - db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
@@ -338,5 +339,4 @@ preserved by the sync (never auto-rewritten).
 - 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
 - cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
 - 91c3f6f docs(manifest): add living PROJECT.md -- state-of-truth for compaction survival
-- 86ed419 feat(ops): detached-launch scripts for session-teardown-proof overnight runs
 <!-- /AUTO -->
