@@ -3150,7 +3150,19 @@ def fill_missing_data(
 
         for query in queries:
             UI.search(query)
-            urls = google_search(driver, query)
+            # google_search/scrape_page drive the real Selenium session
+            # directly, unlike the Gemini extraction call below (which
+            # already survives failures via its own try/except) -- if the
+            # search browser's chromedriver process has died (a real
+            # overnight occurrence: urllib3.exceptions.MaxRetryError,
+            # "target machine actively refused it"), these calls raise and,
+            # uncaught, kill the entire detached process. Treat a failure
+            # here the same as "no results" and move on instead.
+            try:
+                urls = google_search(driver, query)
+            except Exception as e:
+                UI.warn(f"  Search failed (browser may have crashed): {e}")
+                continue
             if not urls:
                 continue
 
@@ -3160,7 +3172,11 @@ def fill_missing_data(
                 visited_urls.add(url)
 
                 UI.reading(url)
-                text, status = scrape_page(driver, url, page_cache)
+                try:
+                    text, status = scrape_page(driver, url, page_cache)
+                except Exception as e:
+                    UI.warn(f"  Scrape failed (browser may have crashed): {e}")
+                    continue
                 if status != "ok":
                     continue
 
