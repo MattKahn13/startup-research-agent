@@ -17,7 +17,7 @@ scan:
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -26,9 +26,24 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-02 22:15 UTC | HEAD: 2cbebaf | status-HEAD: 2cbebaf
+_synced: 2026-07-03 21:05 UTC | HEAD: f2af701 | status-HEAD: f2af701
 
 ## Status
+
+**2026-07-02 ~22:33 UTC: PID 26408 died from a THIRD, genuinely different failure category --
+an unhandled browser crash, not a logic bug -- root-caused, fixed, relaunched.** Three full rounds
+had already completed cleanly (Round 1: 273->359, Round 2: 359->451, Round 3: 451->495), so nothing
+was lost. The crash: the search browser's chromedriver process died mid-gap-fill
+(`urllib3.exceptions.MaxRetryError` / `ConnectionRefusedError`, "target machine actively refused
+it") while `fill_missing_data`'s loop called `google_search(driver, query)` -- a call with NO
+exception handling, unlike the Gemini extraction call a few lines below it in the SAME function
+(which already survives failures via its own `except Exception`). The uncaught exception propagated
+through `run()` to `<module>` and killed the whole detached process. Confirmed via the full
+traceback (not assumed) that this is unrelated to any of tonight's three earlier logic bugs -- it's
+an external infrastructure failure (the browser itself died), the first of that category tonight.
+Fixed by wrapping both `google_search` and `scrape_page` in that loop with the same
+`except Exception` pattern already used a few lines below for the Gemini call, matching this
+project's own locked "Degradation, not stop" principle. TDD, 2 new tests, 64/64 green.
 
 **2026-07-02 ~17:21 UTC: the relaunched run crashed for real (not a regression of the two bugs
 fixed a few hours earlier) -- root-caused, fixed, relaunched clean as PID 26408.** Monitoring
@@ -143,6 +158,9 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
   clean as PID 27244.
 - [x] **Root-cause + fix the shape-confusion crash that killed PID 27244.** DONE 2026-07-02 ~17:40
   UTC -- see Status. `_parse_json` gained an `expect_type` guard; relaunched clean as PID 26408.
+- [x] **Root-cause + fix the browser-crash that killed PID 26408.** DONE 2026-07-02 ~22:40 UTC --
+  see Status. `google_search`/`scrape_page` in `fill_missing_data` now survive a dead chromedriver
+  the same way the Gemini call next to them already does.
 - [ ] **Extend incremental per-page `db.save()` to `execute_searches_parallel`.** Found during the
   2026-07-02 ~18:12 UTC steady-state check: the main parallel round loop only calls `db.save()`
   ONCE, after the entire round finishes (in `run()`, right after `execute_searches_parallel`
@@ -328,6 +346,7 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_gap_fill_field_consistency.py` -- Regression tests for the founders / cornellian_founder field-mismatch bug
 - `tests/test_json_quote_repair.py` -- Regression tests for the unescaped-inner-quotes JSON repair
 - `tests/test_parse_json_shape_confusion.py` -- Regression tests for a shape-confusion crash in `_parse_json`
+- `tests/test_gap_fill_driver_resilience.py` -- Regression test for an unhandled Selenium/chromedriver crash inside
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -340,6 +359,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- f2af701 fix(gap-fill): survive a dead search-browser instead of crashing the process
+- cd2319d docs(manifest): record incremental-save gap in the parallel round loop (found during steady-state check)
 - 2cbebaf docs(manifest): sync + confirm-status
 - 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
 - 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
@@ -350,6 +371,4 @@ preserved by the sync (never auto-rewritten).
 - ea6269b docs(manifest): sync + confirm-status
 - 44e0dbb docs(manifest): CONFIRMED -- 60 records landed live; mark next-step done, add mojibake follow-up
 - f7d418f docs(manifest): sync + confirm-status
-- 85b5f4d docs(manifest): record the upsert schema-seam fix in Status + Decisions
-- cd07c3a fix(db): accept new-schema dicts in upsert -- the LAST gate that dropped records
 <!-- /AUTO -->
