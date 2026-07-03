@@ -25,6 +25,21 @@ class DegradationLadder:
     L1_PROMOTE_AFTER = 10
     L2_PROMOTE_AFTER = 2
     HARD_STOP_AFTER_S = 60 * 60
+    # observe_l2_sample_success/observe_full_prompt_success (the intended
+    # step-back-down promotions) are not currently called anywhere in the
+    # codebase, so a degraded level otherwise has NO wired-up recovery path
+    # short of the full HARD_STOP_AFTER_S. Confirmed live 2026-07-03: a
+    # transient Selenium fail-rate burst tripped straight to BACKLOG and the
+    # run sat idle (a no-op local revalidation pass every 5 min) for 45+
+    # minutes with zero chance of resuming real work. Give it a much earlier
+    # chance to reset and retry; a genuinely broken environment simply
+    # re-degrades immediately and burns through the reset budget below.
+    BACKLOG_RETRY_AFTER_S = 15 * 60
+    MAX_RESETS_BEFORE_HARD_STOP = 3
+    # How long the ladder must stay healthy at NORMAL before a later
+    # degradation is treated as a fresh problem (fresh reset budget) rather
+    # than a continuation of the same one.
+    SUSTAINED_HEALTHY_S = 15 * 60
 
     def __init__(self):
         self.level = Level.NORMAL
@@ -34,6 +49,8 @@ class DegradationLadder:
         self._l2_sample_streak = 0
         self._l3_fetch_streak = 0
         self._degraded_since: float | None = None
+        self._reset_count = 0
+        self._last_normal_at: float = self._now()
 
     @staticmethod
     def _now() -> float:
@@ -42,8 +59,11 @@ class DegradationLadder:
     def _maybe_mark_degraded(self):
         if self.level > Level.NORMAL and self._degraded_since is None:
             self._degraded_since = self._now()
+            if self._now() - self._last_normal_at > self.SUSTAINED_HEALTHY_S:
+                self._reset_count = 0
         elif self.level == Level.NORMAL:
             self._degraded_since = None
+            self._last_normal_at = self._now()
 
     def observe_gemini(self, outcome: CallOutcome) -> None:
         self._gemini_window.append(outcome)
@@ -89,7 +109,19 @@ class DegradationLadder:
             self._maybe_mark_degraded()
 
     def tick(self) -> None:
-        """Called once per round; promotes hard stop if degraded too long."""
-        if self.level >= Level.SCRAPE_ONLY and self._degraded_since is not None:
-            if self._now() - self._degraded_since > self.HARD_STOP_AFTER_S:
+        """Called once per round; promotes hard stop if degraded too long, or
+        resets back to NORMAL well before that so the ladder gets a real
+        chance to test whether conditions have actually recovered (see
+        BACKLOG_RETRY_AFTER_S docstring above)."""
+        if self.level > Level.NORMAL and self._degraded_since is not None:
+            degraded_for = self._now() - self._degraded_since
+            if degraded_for > self.HARD_STOP_AFTER_S or self._reset_count >= self.MAX_RESETS_BEFORE_HARD_STOP:
                 self.level = Level.HARD_STOP
+                return
+            if degraded_for > self.BACKLOG_RETRY_AFTER_S:
+                self.level = Level.NORMAL
+                self._degraded_since = None
+                self._last_normal_at = self._now()
+                self._reset_count += 1
+                self._gemini_window.clear()
+                self._selenium_window.clear()
