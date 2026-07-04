@@ -17,7 +17,7 @@ scan:
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -26,9 +26,28 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-03 21:05 UTC | HEAD: f2af701 | status-HEAD: f2af701
+_synced: 2026-07-04 00:00 UTC | HEAD: 54a9cd9 | status-HEAD: 54a9cd9
 
 ## Status
+
+**2026-07-03 ~19:48 UTC: PID 20552 wasn't crashed, but stuck idle for 45+ minutes with NO way to
+recover on its own -- a real, distinct finding, root-caused and fixed.** A routine steady-state
+check found the process alive but not progressing: DB count flat, log growth nearly stopped, CPU
+barely moving. The log showed a repeating 5-minute loop of "Ladder at BACKLOG level; running
+local-CPU backlog pass" -- 0 tier changes each time, since BACKLOG means "no gemini, no selenium,"
+i.e. no real work is even attempted. Traced the cause: a transient Selenium fail-rate burst near
+the end of Round 1 tripped the degradation ladder straight to `Level.BACKLOG`. Grepping the whole
+codebase found `observe_l2_sample_success`/`observe_full_prompt_success` -- the methods that would
+normally step a degraded level back down -- are **never called anywhere**. The entire ladder was a
+one-way ratchet: it can only escalate (NORMAL -> DEMOTED -> SCRAPE_ONLY -> BACKLOG -> HARD_STOP),
+with no wired-up recovery until the full 60-minute `HARD_STOP_AFTER_S` gives up and exits. Fixed in
+`degradation.py`: `tick()` now auto-resets a degraded ladder back to NORMAL after 15 minutes
+(`BACKLOG_RETRY_AFTER_S`) instead of sitting idle for the full hour, with a reset-count cap
+(`MAX_RESETS_BEFORE_HARD_STOP`) so a genuinely broken environment still gives up via HARD_STOP
+rather than resetting forever, and a sustained-health window (`SUSTAINED_HEALTHY_S`) so an old,
+already-resolved blip doesn't count against a later, unrelated problem. TDD, 3 new tests, 67/67
+green. DB was safely at 540 (Round 1: 495->540, +45, matched exactly) when the stuck process was
+killed and relaunched clean as PID 26892.
 
 **2026-07-02 ~22:33 UTC: PID 26408 died from a THIRD, genuinely different failure category --
 an unhandled browser crash, not a logic bug -- root-caused, fixed, relaunched.** Three full rounds
@@ -161,6 +180,16 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
 - [x] **Root-cause + fix the browser-crash that killed PID 26408.** DONE 2026-07-02 ~22:40 UTC --
   see Status. `google_search`/`scrape_page` in `fill_missing_data` now survive a dead chromedriver
   the same way the Gemini call next to them already does.
+- [x] **Give the degradation ladder a real recovery path.** DONE 2026-07-03 ~19:55 UTC -- see
+  Status. Was a one-way ratchet to HARD_STOP (60 min); now auto-resets to NORMAL after 15 min with
+  a reset-count cap. Relaunched clean as PID 26892.
+- [ ] **Wire up `observe_l2_sample_success`/`observe_full_prompt_success`, or remove them.** The
+  15-minute auto-reset (above) is a safe, coarse band-aid for "the ladder can't recover at all." The
+  deeper fix is either to actually call these methods from the SCRAPE_ONLY/DEMOTED code paths so the
+  ladder steps down gradually based on real observed recovery (matching the original design intent),
+  or to delete the dead methods if graduated step-down isn't worth the complexity. Low urgency now
+  that the ladder can no longer get permanently stuck, but worth deciding deliberately rather than
+  leaving unreachable code in place.
 - [ ] **Extend incremental per-page `db.save()` to `execute_searches_parallel`.** Found during the
   2026-07-02 ~18:12 UTC steady-state check: the main parallel round loop only calls `db.save()`
   ONCE, after the entire round finishes (in `run()`, right after `execute_searches_parallel`
@@ -206,6 +235,16 @@ The center of truth for **locked decisions and standing constraints**. Check her
 a settled question: if a tension is recorded resolved, reference it, don't re-litigate. Authored and
 preserved by the sync (never auto-rewritten).
 
+- **[2026-07-03] A degraded ladder level MUST have a bounded, wired-up recovery path -- verify the
+  promotion methods are actually called, don't assume they are because they exist.** Found live:
+  `observe_l2_sample_success`/`observe_full_prompt_success` were defined and unit-tested in
+  isolation, but never invoked by any real caller in `startup_researcher.py`. Every level above
+  NORMAL was reachable but functionally a dead end short of the full 60-minute `HARD_STOP_AFTER_S`.
+  `degradation.py`'s `tick()` now auto-resets to NORMAL after `BACKLOG_RETRY_AFTER_S` (15 min),
+  capped by `MAX_RESETS_BEFORE_HARD_STOP` so a genuinely broken environment still gives up, with
+  `SUSTAINED_HEALTHY_S` so an old resolved blip doesn't count against a later unrelated one. This is
+  a deliberately coarse full-reset, not the originally-intended graduated step-down -- see the
+  tracked Next-steps item to decide whether to wire up the finer-grained promotions or delete them.
 - **[2026-07-02] Any shared JSON-repair helper needs to know what SHAPE the caller expects, not
   just how to recover valid JSON.** `_parse_json` is called by four different places: one always
   wants a bare list (extraction), three always want a dict wrapping a nested array
@@ -347,6 +386,7 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_json_quote_repair.py` -- Regression tests for the unescaped-inner-quotes JSON repair
 - `tests/test_parse_json_shape_confusion.py` -- Regression tests for a shape-confusion crash in `_parse_json`
 - `tests/test_gap_fill_driver_resilience.py` -- Regression test for an unhandled Selenium/chromedriver crash inside
+- `tests/test_degradation.py`
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -359,6 +399,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 54a9cd9 fix(degradation): give the ladder a real recovery path instead of a one-way ratchet
+- b9dd612 docs(manifest): sync + confirm-status
 - f2af701 fix(gap-fill): survive a dead search-browser instead of crashing the process
 - cd2319d docs(manifest): record incremental-save gap in the parallel round loop (found during steady-state check)
 - 2cbebaf docs(manifest): sync + confirm-status
@@ -369,6 +411,4 @@ preserved by the sync (never auto-rewritten).
 - b4007ee fix(gap-fill): read/write cornellian_founder, not the dead legacy 'founders' field
 - ae9b4ce docs(manifest): clarify the three separate dataset generations -- nothing was lost
 - ea6269b docs(manifest): sync + confirm-status
-- 44e0dbb docs(manifest): CONFIRMED -- 60 records landed live; mark next-step done, add mojibake follow-up
-- f7d418f docs(manifest): sync + confirm-status
 <!-- /AUTO -->
