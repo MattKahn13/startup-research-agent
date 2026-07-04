@@ -26,9 +26,20 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-04 00:00 UTC | HEAD: 54a9cd9 | status-HEAD: 54a9cd9
+_synced: 2026-07-04 23:04 UTC | HEAD: ddf72f9 | status-HEAD: ddf72f9
 
 ## Status
+
+**2026-07-04 ~18:49 UTC: PID 26892 finished CLEANLY -- hit its `--max-rounds 30` budget and
+stopped itself as designed. Not a crash; this is the overnight run completing.** Final tally:
+**1,278 records**, 757 verified (single-source or better), 1,625 URLs visited, 30 rounds, elapsed
+22h50m from the 2026-07-03 ~19:58 UTC relaunch. Five distinct bugs were found and fixed live over
+that span (see below) and none recurred after their fixes landed -- the run's last many hours were
+uneventful aside from the expected, self-recovering BACKLOG blips. `launch_detached.py` writes
+`startups_clean.json`, `startups.csv`, and `gap_report.json` to `startup_output_overnight/` on a
+clean stop; those are ready to inspect. This dataset is still the isolated verification run (see
+the three-dataset-generations decision below) -- merging it into the real 1,389-record working
+dataset is the next actual step, not another relaunch.
 
 **2026-07-03 ~19:48 UTC: PID 20552 wasn't crashed, but stuck idle for 45+ minutes with NO way to
 recover on its own -- a real, distinct finding, root-caused and fixed.** A routine steady-state
@@ -203,17 +214,18 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
   Deliberately NOT applied live tonight -- doing so requires killing the currently-healthy PID 26408
   mid-round, which would itself lose this round's not-yet-saved progress (the exact thing being
   fixed). Apply next time the process needs restarting anyway, or on explicit go-ahead.
-- [ ] **Let the overnight run complete** (now PID 26408, resumed from the 273-record DB -- no data
-  lost across either restart), then run the data layer over the fresh DB: `analyze_ecosystem.py`,
-  `export_csv.py`, `export_network.py`. Report findings. Monitor
-  `startup_output_overnight/startups_db.json` count + `run_detached.log` (see
-  `startup_output_overnight/run_detached.pid`).
+- [x] **Let the overnight run complete.** DONE 2026-07-04 ~18:49 UTC -- PID 26892 hit its
+  `--max-rounds 30` budget and stopped cleanly (not a crash). Final: 1,278 records, 757 verified,
+  1,625 URLs visited, 30 rounds, 22h50m elapsed. See Status.
+- [ ] **Run the data layer over the finished DB**: `analyze_ecosystem.py`, `export_csv.py`,
+  `export_network.py` against `startup_output_overnight/startups_db.json` (1,278 records). Report
+  findings.
 - [ ] **Merge tonight's fresh run into the real 1,389-record dataset.** Tonight's run
-  (`startup_output_overnight/startups_db.json`) started from an EMPTY db on purpose (isolate the
-  parser-fix verification from the real dataset). It is NOT additive to `startup_output_test/
-  startups_db_deduped.json` (the 1,389, June 6-7) or `startup_output/startups_db.json` (the
-  original 1,525, May). Once the overnight run is done, dedupe-merge its new records into the 1,389
-  the same way `dedup_records.py` merged the original 1,525 -- by canonical company name.
+  (`startup_output_overnight/startups_db.json`, now 1,278 records) started from an EMPTY db on
+  purpose (isolate the parser-fix verification from the real dataset). It is NOT additive to
+  `startup_output_test/startups_db_deduped.json` (the 1,389, June 6-7) or `startup_output/
+  startups_db.json` (the original 1,525, May). Dedupe-merge its records into the 1,389 the same way
+  `dedup_records.py` merged the original 1,525 -- by canonical company name.
 - [ ] **Fix the evidence_span mojibake** (non-blocking, cosmetic). Apostrophes render as
   UTF-8-as-Latin-1 garble (`MBA` + garbled char + `09`). Likely the page-scrape decode step; check
   `scrape_page`'s encoding detection. Doesn't break matching today but will look bad in any
@@ -399,6 +411,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- ddf72f9 docs(manifest): sync + confirm-status
 - 54a9cd9 fix(degradation): give the ladder a real recovery path instead of a one-way ratchet
 - b9dd612 docs(manifest): sync + confirm-status
 - f2af701 fix(gap-fill): survive a dead search-browser instead of crashing the process
@@ -410,5 +423,4 @@ preserved by the sync (never auto-rewritten).
 - db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
 - b4007ee fix(gap-fill): read/write cornellian_founder, not the dead legacy 'founders' field
 - ae9b4ce docs(manifest): clarify the three separate dataset generations -- nothing was lost
-- ea6269b docs(manifest): sync + confirm-status
 <!-- /AUTO -->
