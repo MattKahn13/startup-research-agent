@@ -28,7 +28,7 @@ cmd = [
     sys.executable,
     "-u",  # unbuffered stdout so run_detached.log shows live progress
     "startup_researcher.py",
-    "--max-rounds", "30",
+    "--max-rounds", "500",
     "--output-dir", "startup_output_overnight",
     "--seed-urls",
     "https://eship.cornell.edu/cornell-startups/high-profile-startups/,"

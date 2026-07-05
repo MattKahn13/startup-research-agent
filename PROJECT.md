@@ -26,9 +26,18 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-04 23:04 UTC | HEAD: ddf72f9 | status-HEAD: ddf72f9
+_synced: 2026-07-05 12:22 UTC | HEAD: bcb6521 | status-HEAD: bcb6521
 
 ## Status
+
+**2026-07-05 ~08:19 UTC: relaunched as PID 36556 to keep the run going -- bumped
+`launch_detached.py`'s `--max-rounds` from 30 to 500.** After the clean 2026-07-04 finish (below),
+the process sat idle overnight per its own design (round budget reached, not a crash). Confirmed
+zero orphaned chromedriver/python processes from this pipeline before relaunching -- the finished
+run cleaned up after itself correctly. Resumed clean from the 1,278-record DB ("DB: 1278 records
+loaded", 4,208 cached pages). 30 rounds took 22h50m last time; at 500 rounds the process will keep
+researching for a long stretch before it would self-stop again -- relaunch again (or raise the cap
+further) if it reaches the new budget.
 
 **2026-07-04 ~18:49 UTC: PID 26892 finished CLEANLY -- hit its `--max-rounds 30` budget and
 stopped itself as designed. Not a crash; this is the overnight run completing.** Final tally:
@@ -214,12 +223,16 @@ ecosystem report, CSVs, and a Gephi-ready network graph. See `OVERNIGHT_REPORT.m
   Deliberately NOT applied live tonight -- doing so requires killing the currently-healthy PID 26408
   mid-round, which would itself lose this round's not-yet-saved progress (the exact thing being
   fixed). Apply next time the process needs restarting anyway, or on explicit go-ahead.
-- [x] **Let the overnight run complete.** DONE 2026-07-04 ~18:49 UTC -- PID 26892 hit its
+- [x] **Let the overnight run complete (round 1).** DONE 2026-07-04 ~18:49 UTC -- PID 26892 hit its
   `--max-rounds 30` budget and stopped cleanly (not a crash). Final: 1,278 records, 757 verified,
   1,625 URLs visited, 30 rounds, 22h50m elapsed. See Status.
-- [ ] **Run the data layer over the finished DB**: `analyze_ecosystem.py`, `export_csv.py`,
-  `export_network.py` against `startup_output_overnight/startups_db.json` (1,278 records). Report
-  findings.
+- [ ] **Run is going again** -- PID 36556, relaunched 2026-07-05 ~08:19 UTC with `--max-rounds`
+  raised to 500 so it doesn't self-stop again soon. Monitor `startup_output_overnight/
+  startups_db.json` count + `run_detached.log`; relaunch again if it reaches the new budget.
+- [ ] **Run the data layer over the DB** (currently 1,278+ records and growing):
+  `analyze_ecosystem.py`, `export_csv.py`, `export_network.py` against
+  `startup_output_overnight/startups_db.json`. Report findings. Can run anytime -- doesn't require
+  stopping the live process.
 - [ ] **Merge tonight's fresh run into the real 1,389-record dataset.** Tonight's run
   (`startup_output_overnight/startups_db.json`, now 1,278 records) started from an EMPTY db on
   purpose (isolate the parser-fix verification from the real dataset). It is NOT additive to
@@ -411,6 +424,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- bcb6521 docs(manifest): record clean completion of the overnight run -- 1,278 records, 30 rounds, no crash
 - ddf72f9 docs(manifest): sync + confirm-status
 - 54a9cd9 fix(degradation): give the ladder a real recovery path instead of a one-way ratchet
 - b9dd612 docs(manifest): sync + confirm-status
@@ -422,5 +436,4 @@ preserved by the sync (never auto-rewritten).
 - 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
 - db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
 - b4007ee fix(gap-fill): read/write cornellian_founder, not the dead legacy 'founders' field
-- ae9b4ce docs(manifest): clarify the three separate dataset generations -- nothing was lost
 <!-- /AUTO -->
