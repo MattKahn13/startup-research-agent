@@ -11,13 +11,14 @@
 scan:
   "Core pipeline (the agent)": ["startup_researcher.py", "gemini_tool.py", "schema.py", "evidence.py", "metrics.py", "degradation.py", "retry_policy.py", "url_canonical.py"]
   "Ops -- detached overnight launch": ["launch_detached.py", "run_detached.ps1"]
+  "Ops -- supervisor watchdog": ["supervisor.py", "launch_supervisor.py"]
   "Data layer -- migrate / dedup / analyze": ["migrate_to_v2_schema.py", "dedup_records.py", "analyze_ecosystem.py", "export_csv.py", "export_network.py", "reextract_all.py", "repair_stranded_founders.py"]
   "Enrichment -- wikipedia + linkedin": ["enrich_wikipedia.py", "discover_via_wikipedia_categories.py", "linkedin_login.py", "parse_linkedin_auth.py"]
   "Probes (empirical findings)": ["probe_headed_minimized.py", "probe_linkedin.py", "probe_linkedin_auth.py", "probe_gemini.py"]
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py", "tests/test_supervisor.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -26,9 +27,27 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-05 12:22 UTC | HEAD: bcb6521 | status-HEAD: bcb6521
+_synced: 2026-07-05 12:24 UTC | HEAD: 4983880 | status-HEAD: bcb6521
 
 ## Status
+
+**2026-07-05 ~22:41 UTC: replaced LLM-polling supervision with a Python watchdog (`supervisor.py`).**
+Babysitting the run by waking Claude every ~30 min to run five process/log commands and print a
+table was giving diminishing returns -- high cost per check, low time resolution, and every failure
+this project hit (3 crashes, a 45-min stuck ladder, a 65-min Gemini hang) happened BETWEEN polls and
+burned dead wall-clock before anyone noticed. The watchdog inverts that: a cheap detached process
+ticks every 60s (file stats + one process snapshot, no browser) and handles the mechanical 95%
+itself -- clean-stop relaunch (rotates the log first), crash relaunch under a 3-in-15min loop-guard,
+cross-run orphan-Chrome sweep (parent-dead roots only -- it does NOT touch the within-run
+`driver.quit()` leak, whose windows have a live parent), Gemini-hang and log-freeze and
+pending-CAPTCHA detection. It escalates to a human ONLY for novel crashes, crash-loops, and pending
+CAPTCHAs, via `supervisor_escalations.jsonl`. Every tick writes `supervisor_status.json`, so a
+check-in is now ONE Read of that heartbeat, not five commands. Relaunch is a plain `subprocess.Popen`
+from the watchdog, so the kb-gate never enters the loop. Pure decision logic (exit classification,
+loop-guard, orphan-set, hang detection) is TDD'd -- 10 new tests, 77/77 green. Launched detached
+(PID 18616) attached to the live research run (PID 36556, NOT restarted); first sweep auto-killed 12
+cross-run orphaned Chrome windows. Watchdog files live in `startup_output_overnight/`
+(`supervisor.log`, `supervisor_status.json`, `supervisor_escalations.jsonl`, `supervisor.pid`).
 
 **2026-07-05 ~08:19 UTC: relaunched as PID 36556 to keep the run going -- bumped
 `launch_detached.py`'s `--max-rounds` from 30 to 500.** After the clean 2026-07-04 finish (below),
@@ -260,6 +279,18 @@ The center of truth for **locked decisions and standing constraints**. Check her
 a settled question: if a tension is recorded resolved, reference it, don't re-litigate. Authored and
 preserved by the sync (never auto-rewritten).
 
+- **[2026-07-05] Long-run supervision is a Python watchdog (`supervisor.py`), not an LLM poll loop.**
+  The default going forward: launch the research agent, then launch the watchdog
+  (`python launch_supervisor.py`) which attaches to `run_detached.pid` and handles clean-stop/crash
+  relaunch, orphan sweeps, and hang/CAPTCHA detection on a 60s tick. A human/LLM reads ONE file --
+  `startup_output_overnight/supervisor_status.json` -- to check in, and acts only on
+  `supervisor_escalations.jsonl` entries (novel crash, crash-loop, pending CAPTCHA). Do NOT go back
+  to waking Claude every 30 min to run process/log commands -- that was measured to give diminishing
+  returns (see Status). The watchdog relaunches via `subprocess.Popen`, so the kb-gate is not in the
+  relaunch loop; `launch_detached.spawn_detached()` is the single source of the launch argv (reused
+  by both the manual launcher and the watchdog -- no drift). The orphan sweep only kills parent-dead
+  Chrome (cross-run leftovers); the within-run `driver.quit()` leak ([[silent-driver-quit-failure]]
+  in the web-agent wiki) is a separate, still-open code fix.
 - **[2026-07-03] A degraded ladder level MUST have a bounded, wired-up recovery path -- verify the
   promotion methods are actually called, don't assume they are because they exist.** Found live:
   `observe_l2_sample_success`/`observe_full_prompt_success` were defined and unit-tested in
@@ -424,6 +455,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
 - bcb6521 docs(manifest): record clean completion of the overnight run -- 1,278 records, 30 rounds, no crash
 - ddf72f9 docs(manifest): sync + confirm-status
 - 54a9cd9 fix(degradation): give the ladder a real recovery path instead of a one-way ratchet
@@ -435,5 +467,4 @@ preserved by the sync (never auto-rewritten).
 - 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
 - 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
 - db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
-- b4007ee fix(gap-fill): read/write cornellian_founder, not the dead legacy 'founders' field
 <!-- /AUTO -->
