@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 11:48 UTC | HEAD: 316f1ae | status-HEAD: 316f1ae
+_synced: 2026-07-06 13:56 UTC | HEAD: e5068bc | status-HEAD: e5068bc
 
 ## Status
 
@@ -51,6 +51,11 @@ MemoryError tail to `supervisor_escalations.jsonl` -- the exact hands-off recove
 exists for. DB safe at 1,413 throughout (per-page save). Open follow-up: the machine sleeping kills
 BOTH the run and the watchdog together (wiki lesson #1 in supervising-background-runs); the hourly
 human glance is the only backstop for that -- keeping the machine awake is a Matt-side call.
+**Fix validated live (2026-07-06 ~09:50):** on the resumed run (PID 7788) Chrome spiked to 109 once
+(fired one `chrome-high` escalation, as designed), then teardowns pulled it back to 67 -- net BELOW
+the pre-spike 84, i.e. windows are being reclaimed, not leaked. Traced every `driver.quit()` site to
+confirm coverage and closed the last bare one (`run_login`, unused by the agent) in `e5068bc`; the
+only `driver.quit()` left in the codebase is inside `hard_quit` itself. DB progressing (1,475).
 
 **2026-07-05 ~22:41 UTC: replaced LLM-polling supervision with a Python watchdog (`supervisor.py`).**
 Babysitting the run by waking Claude every ~30 min to run five process/log commands and print a
@@ -482,6 +487,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- e5068bc fix(driver): route the last bare driver.quit() (run_login) through hard_quit -- closes the leak pattern completely
+- 33a39c7 docs(manifest): sync + confirm-status
 - 316f1ae fix(driver): force-kill Chrome at teardown -- the quit() leak OOM-crashed the run
 - bab8a11 docs(manifest): sync + confirm-status
 - 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
@@ -492,6 +499,4 @@ preserved by the sync (never auto-rewritten).
 - b9dd612 docs(manifest): sync + confirm-status
 - f2af701 fix(gap-fill): survive a dead search-browser instead of crashing the process
 - cd2319d docs(manifest): record incremental-save gap in the parallel round loop (found during steady-state check)
-- 2cbebaf docs(manifest): sync + confirm-status
-- 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
 <!-- /AUTO -->
