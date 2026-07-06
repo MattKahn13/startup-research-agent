@@ -32,6 +32,12 @@ RESEARCH_ARGV = [
     sys.executable,
     "-u",  # unbuffered stdout so run_detached.log shows live progress
     "startup_researcher.py",
+    "--resume",  # CRITICAL: reload visited_urls / queries_used / plan / round from
+                 # startup_checkpoint.json so a crash/sleep relaunch CONTINUES instead
+                 # of re-planning + re-extracting already-visited pages. Without it,
+                 # every restart re-did discovery from scratch (the DB dedups records
+                 # and the page cache blocks re-downloads, but Gemini re-extraction was
+                 # wasted). This is one continuous task, so always-resume is correct.
     "--max-rounds", "500",
     "--output-dir", "startup_output_overnight",
     "--seed-urls",

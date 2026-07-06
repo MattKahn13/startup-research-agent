@@ -3781,10 +3781,13 @@ def run(
     # ── Checkpoint ────────────────────────────────────────────────────────
     state = load_checkpoint() if resume else {}
 
-    visited_urls: set[str] = set(state.get("visited_urls", []))
-    cache_manifest: set[str] = set(state.get("cache_manifest", []))
-    queries_used: list[str] = state.get("queries_used", [])
-    round_num: int           = state.get("round", 0)
+    # `or []`/`or 0` (not just a default) so a PARTIAL checkpoint -- e.g. one saved
+    # at the planning phase, which has plan+cache_manifest but visited_urls=None and
+    # round=None -- resumes cleanly instead of crashing on set(None) / None<int.
+    visited_urls: set[str] = set(state.get("visited_urls") or [])
+    cache_manifest: set[str] = set(state.get("cache_manifest") or [])
+    queries_used: list[str] = state.get("queries_used") or []
+    round_num: int           = state.get("round") or 0
     plan: dict | None        = state.get("plan")
     page_cache = PageCache(output_dir)  # file-backed; survives restarts
     if cache_manifest:
