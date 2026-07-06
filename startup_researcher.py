@@ -2401,6 +2401,64 @@ def save_checkpoint(state: dict, page_cache=None):
 #  PHASE 1 — PLANNING  (one-time, builds the initial search strategy)
 # ═════════════════════════════════════════════════════════════════════════════
 
+class VisitedLog:
+    """A set of visited URLs backed by an APPEND-ONLY log file, flushed on every
+    add, so a mid-round crash/sleep persists every visited URL.
+
+    Why not just the checkpoint: the checkpoint saves `visited_urls` only at
+    round-end, but rounds routinely don't finish before this machine sleeps
+    (~hourly on 2026-07-06), so `--resume` kept loading an empty set and the run
+    re-did all discovery every restart (the page cache still blocked re-downloads
+    and the DB dedups records, so no bad DATA -- just wasted Gemini re-extraction).
+    This decouples visited-tracking from the coarse round cadence: every URL is
+    durable the instant it's seen.
+
+    Drop-in for the plain `set` the run loop uses: `in`, add, len, iter, clear.
+    clear() also TRUNCATES the file so the intentional URL-expiry clear (every
+    URL_EXPIRY_ROUNDS, to re-check stale pages) isn't undone on the next resume.
+    """
+
+    def __init__(self, path):
+        self.path = str(path)
+        self._set: set[str] = set()
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        u = line.strip()
+                        if u:
+                            self._set.add(u)
+            except OSError:
+                pass
+        self._fh = open(self.path, "a", encoding="utf-8")
+
+    def add(self, url: str) -> None:
+        if url and url not in self._set:
+            self._set.add(url)
+            try:
+                self._fh.write(url + "\n")
+                self._fh.flush()
+            except (OSError, ValueError):
+                pass
+
+    def clear(self) -> None:
+        self._set.clear()
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+        self._fh = open(self.path, "w", encoding="utf-8")  # truncate
+
+    def __contains__(self, url) -> bool:
+        return url in self._set
+
+    def __len__(self) -> int:
+        return len(self._set)
+
+    def __iter__(self):
+        return iter(tuple(self._set))  # snapshot: safe under concurrent add
+
+
 def plan_research(prompt: str) -> dict:
     """Ask Gemini to decompose the research into search strategies."""
 
@@ -3784,7 +3842,13 @@ def run(
     # `or []`/`or 0` (not just a default) so a PARTIAL checkpoint -- e.g. one saved
     # at the planning phase, which has plan+cache_manifest but visited_urls=None and
     # round=None -- resumes cleanly instead of crashing on set(None) / None<int.
-    visited_urls: set[str] = set(state.get("visited_urls") or [])
+    # Append-only, flush-per-URL log so a mid-round crash/sleep keeps the visited
+    # set (the checkpoint's round-end save was too coarse -- rounds rarely finish
+    # before this machine sleeps, so resume loaded nothing). Fold in any URLs the
+    # checkpoint happens to carry, for backward compatibility.
+    visited_urls = VisitedLog(os.path.join(output_dir, "visited_urls.log"))
+    for _u in (state.get("visited_urls") or []):
+        visited_urls.add(_u)
     cache_manifest: set[str] = set(state.get("cache_manifest") or [])
     queries_used: list[str] = state.get("queries_used") or []
     round_num: int           = state.get("round") or 0
