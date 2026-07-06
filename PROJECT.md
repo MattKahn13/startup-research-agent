@@ -18,7 +18,7 @@ scan:
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py", "tests/test_supervisor.py", "tests/test_hard_quit.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py", "tests/test_supervisor.py", "tests/test_hard_quit.py", "tests/test_visited_log.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 16:06 UTC | HEAD: 40286b9 | status-HEAD: 40286b9
+_synced: 2026-07-06 19:13 UTC | HEAD: 4711ccc | status-HEAD: 4711ccc
 
 ## Status
 
@@ -73,7 +73,19 @@ hardened with `or []`/`or 0` so a partial checkpoint (round=None) resumes cleanl
 (PID 22716) so its relaunches now use `--resume`; from here restarts CONTINUE instead of repeating.
 The visited history up to the 11:32 sleep was already lost to the wipe (unrecoverable), but the page
 cache still prevents re-downloads so the current session only re-extracts; future restarts are
-protected. Current live PIDs: research 18476, watchdog 22716.
+protected.
+**Resume fix, part 2 (2026-07-06 ~15:10):** verifying the above on a live relaunch exposed that
+`--resume` was passing correctly but STILL loaded `visited_urls: 0` -- because the checkpoint only
+saves `visited_urls` at round-end, and rounds (~30-45 min) rarely complete before this machine sleeps
+(~hourly), so the checkpoint stayed frozen at its 11:41 planning-phase state and every resume loaded
+an empty set. Same coarse-cadence bug as the earlier per-round DB save, now in the checkpoint. Fixed
+with `VisitedLog` -- an append-only, flush-per-URL log (`startup_output_overnight/visited_urls.log`),
+a drop-in for the set (`in`/add/len/iter/clear; clear truncates so URL-expiry survives resume). Every
+visited URL is now durable the instant it's seen, independent of round completion, so a mid-round
+sleep-death resumes with the full visited set. TDD (`test_visited_log.py`), 89 green. Deployed
+(research PID 18728, watchdog 24756). Root cause of the OFFLINE gaps remains the machine sleeping
+(~hourly, 3 sleep-deaths so far) -- disabling sleep while plugged in is the only durable fix for THAT
+and is a Matt-side setting; this fix just makes the inevitable restarts finally cheap (no repeat).
 
 **2026-07-05 ~22:41 UTC: replaced LLM-polling supervision with a Python watchdog (`supervisor.py`).**
 Babysitting the run by waking Claude every ~30 min to run five process/log commands and print a
@@ -493,6 +505,7 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_degradation.py`
 - `tests/test_supervisor.py` -- Tests for the supervisor watchdog's pure decision logic
 - `tests/test_hard_quit.py` -- Tests for the browser-process force-kill on driver teardown
+- `tests/test_visited_log.py` -- Tests for VisitedLog -- crash-safe visited-URL persistence
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -505,6 +518,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 4711ccc fix(resume): crash-safe visited-URL log so --resume actually carries forward
+- b255ccd docs(manifest): record the --resume fix; sync
 - 40286b9 fix(resume): relaunch with --resume so restarts continue instead of repeating
 - 249bc0e docs(manifest): record run-scoped chrome metric correction; sync
 - 5a717ad fix(supervisor): alarm on run-scoped Chrome, not total -- total was polluted by the user's own 48 browser windows, crying wolf. run_chrome_count attributes chrome.exe to the watched run's subtree; heartbeat carries both. TDD +2.
@@ -515,6 +530,4 @@ preserved by the sync (never auto-rewritten).
 - bab8a11 docs(manifest): sync + confirm-status
 - 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
 - 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
-- bcb6521 docs(manifest): record clean completion of the overnight run -- 1,278 records, 30 rounds, no crash
-- ddf72f9 docs(manifest): sync + confirm-status
 <!-- /AUTO -->
