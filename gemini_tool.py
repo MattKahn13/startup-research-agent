@@ -2489,10 +2489,7 @@ def run_login(
         _print_stderr(f"    Cookie file: {cookie_file}")
         _print_stderr("")
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        hard_quit(driver)  # force-kill: quit() alone leaks Chrome (last bare-quit site)
 
 
 # ── Interactive REPL mode ─────────────────────────────────────────────────
