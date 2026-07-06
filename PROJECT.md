@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 02:47 UTC | HEAD: bab8a11 | status-HEAD: 5124f7d
+_synced: 2026-07-06 11:48 UTC | HEAD: 316f1ae | status-HEAD: 316f1ae
 
 ## Status
 
@@ -469,6 +469,7 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_gap_fill_driver_resilience.py` -- Regression test for an unhandled Selenium/chromedriver crash inside
 - `tests/test_degradation.py`
 - `tests/test_supervisor.py` -- Tests for the supervisor watchdog's pure decision logic
+- `tests/test_hard_quit.py` -- Tests for the browser-process force-kill on driver teardown
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -481,6 +482,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 316f1ae fix(driver): force-kill Chrome at teardown -- the quit() leak OOM-crashed the run
 - bab8a11 docs(manifest): sync + confirm-status
 - 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
 - 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
@@ -492,5 +494,4 @@ preserved by the sync (never auto-rewritten).
 - cd2319d docs(manifest): record incremental-save gap in the parallel round loop (found during steady-state check)
 - 2cbebaf docs(manifest): sync + confirm-status
 - 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
-- 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
 <!-- /AUTO -->
