@@ -91,7 +91,7 @@ from bs4 import BeautifulSoup
 _LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
 if _LOCAL_DIR not in sys.path:
     sys.path.insert(0, _LOCAL_DIR)
-from gemini_tool import GeminiSession
+from gemini_tool import GeminiSession, hard_quit
 
 from selenium.common.exceptions import (
     TimeoutException,
@@ -3024,7 +3024,7 @@ def execute_searches_parallel(
         finally:
             try:
                 save_cookies(driver)
-                driver.quit()
+                hard_quit(driver)  # force-kill: quit() alone leaks Chrome -> OOM over a long run
             except Exception:
                 pass
             all_pages_scraped[0] += local_scraped
@@ -3628,7 +3628,7 @@ def verify_and_fill(
                 batch_size=len(targets),
             )
         finally:
-            try: driver.quit()
+            try: hard_quit(driver)  # force-kill: quit() alone leaks Chrome -> OOM
             except Exception: pass
 
         # ── Pass 3: revalidate again after filling ────────────────────────
@@ -3959,7 +3959,7 @@ def run(
                     except Exception:
                         pass
                     try:
-                        driver.quit()
+                        hard_quit(driver)  # force-kill: quit() alone leaks Chrome -> OOM
                     except Exception:
                         pass
                     driver = init_driver(headless=headless, chrome_major=chrome_major)
@@ -4114,7 +4114,7 @@ def run(
             except Exception:
                 pass
             try:
-                driver.quit()
+                hard_quit(driver)  # force-kill: quit() alone leaks Chrome -> OOM
             except Exception:
                 pass
 

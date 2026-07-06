@@ -86,6 +86,7 @@ import logging
 import os
 import random
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -921,13 +922,57 @@ def init_driver(
     return driver
 
 
-def quit_driver(driver: uc.Chrome) -> None:
-    """Quit the driver and clean up any ephemeral profile directory."""
-    ephemeral = getattr(driver, "_ephemeral_profile", None)
+def browser_pids(driver) -> set:
+    """The OS PIDs this driver owns: the Chrome browser (uc sets .browser_pid)
+    and the chromedriver service process (selenium's Service.process.pid).
+    Captured BEFORE quit() -- quit() nulls these out on the way down, so a
+    post-quit read finds nothing. Best-effort: whatever attributes exist."""
+    pids = set()
+    bpid = getattr(driver, "browser_pid", None)
+    if isinstance(bpid, int):
+        pids.add(bpid)
+    try:
+        proc = getattr(getattr(driver, "service", None), "process", None)
+        spid = getattr(proc, "pid", None)
+        if isinstance(spid, int):
+            pids.add(spid)
+    except Exception:
+        pass
+    return pids
+
+
+def _force_kill_pids(pids) -> None:
+    for pid in pids:
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+
+def hard_quit(driver) -> None:
+    """quit() the driver AND guarantee its Chrome/chromedriver processes die.
+
+    driver.quit() silently fails fairly often on Windows (WinError 6, 'the
+    handle is invalid') and leaves the browser processes alive. Over a long run
+    these leaked windows pile up and eventually exhaust RAM -- confirmed
+    2026-07-06: the Gemini session, restarting on a hang, hit
+    `MemoryError()` spawning yet another Chrome and took down the whole run
+    (and its watchdog) after ~7h of accumulation. So: capture the PIDs first,
+    quit(), then force-kill the process tree for any that survived."""
+    pids = browser_pids(driver)
     try:
         driver.quit()
     except Exception:
         pass
+    _force_kill_pids(pids)
+
+
+def quit_driver(driver: uc.Chrome) -> None:
+    """Quit the driver (force-killing leaked processes) and clean up any
+    ephemeral profile directory."""
+    ephemeral = getattr(driver, "_ephemeral_profile", None)
+    hard_quit(driver)
     if ephemeral:
         _cleanup_profile(ephemeral)
 

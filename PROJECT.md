@@ -18,7 +18,7 @@ scan:
   "Specs (design)": ["docs/superpowers/specs/2026-06-07-research-agent-v2-design.md", "docs/superpowers/specs/2026-06-05-hardening-pass-design.md", "docs/superpowers/specs/2026-06-07-browser-defaults.md"]
   "Plans (implementation)": ["docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md", "docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md"]
   "Reports & handoffs": ["OVERNIGHT_REPORT.md", "HANDOFF.md", "BLOCKED_NEEDS_HUMAN.md", "cornell-startups-tasks.md"]
-  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py", "tests/test_supervisor.py"]
+  "Tests": ["tests/test_parse_json.py", "tests/test_schema.py", "tests/test_db_upsert.py", "tests/test_gap_fill_field_consistency.py", "tests/test_json_quote_repair.py", "tests/test_parse_json_shape_confusion.py", "tests/test_gap_fill_driver_resilience.py", "tests/test_degradation.py", "tests/test_supervisor.py", "tests/test_hard_quit.py"]
 external:
   - "~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)"
   - "~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction"
@@ -27,9 +27,30 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 02:46 UTC | HEAD: 5124f7d | status-HEAD: 5124f7d
+_synced: 2026-07-06 02:47 UTC | HEAD: bab8a11 | status-HEAD: 5124f7d
 
 ## Status
+
+**2026-07-06 ~00:03 UTC: the run OOM-crashed -- the `driver.quit()` Chrome leak finally exhausted
+RAM. Root-caused, fixed at the source, and the watchdog auto-recovered it.** The prior run (PID
+36556) and its watchdog (PID 18616) both died ~00:03; ~7.5h were lost before the hourly heartbeat
+glance caught it (the machine may also have slept). Cause, from the research log: `Gemini restart
+failed: MemoryError()` while the Gemini session was restarting after a hang -- the
+[[silent-driver-quit-failure]] leak (quit() silently fails on Windows with WinError 6, leaving Chrome
+alive) had piled up ~100+ windows over the hours until spawning one more Chrome threw MemoryError.
+This is the leak graduating from cosmetic to fatal; the cross-run orphan sweep couldn't help because
+those windows had a live parent. **Fixed at the source:** new `gemini_tool.hard_quit(driver)`
+captures the browser + chromedriver PIDs BEFORE `quit()` and force-kills the tree (`taskkill /T /F`)
+for any that survive; `quit_driver` routes through it and all four `startup_researcher.py`
+worker-driver `driver.quit()` sites now call it. Backstop: the watchdog escalates `chrome-high` if a
+live run's Chrome count climbs back toward the OOM zone (>=90) so a repeat is a caught warning, not a
+hard crash. TDD -- 5 new tests (`test_hard_quit.py` + `chrome_alarm`), 82/82 green. Recovery was
+autonomous and proved the design: relaunching the watchdog (PID 13824) detected the dead research
+PID, classified the exit, relaunched research as **PID 7788** with the fixed code, and wrote the
+MemoryError tail to `supervisor_escalations.jsonl` -- the exact hands-off recovery the watchdog
+exists for. DB safe at 1,413 throughout (per-page save). Open follow-up: the machine sleeping kills
+BOTH the run and the watchdog together (wiki lesson #1 in supervising-background-runs); the hourly
+human glance is the only backstop for that -- keeping the machine awake is a Matt-side call.
 
 **2026-07-05 ~22:41 UTC: replaced LLM-polling supervision with a Python watchdog (`supervisor.py`).**
 Babysitting the run by waking Claude every ~30 min to run five process/log commands and print a
@@ -460,6 +481,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- bab8a11 docs(manifest): sync + confirm-status
 - 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
 - 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
 - bcb6521 docs(manifest): record clean completion of the overnight run -- 1,278 records, 30 rounds, no crash
@@ -471,5 +493,4 @@ preserved by the sync (never auto-rewritten).
 - 2cbebaf docs(manifest): sync + confirm-status
 - 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
 - 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
-- 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
 <!-- /AUTO -->

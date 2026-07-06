@@ -13,6 +13,7 @@ from supervisor import (
     should_relaunch,
     gemini_hang_seconds,
     orphan_chrome_pids,
+    chrome_alarm,
 )
 
 
@@ -143,3 +144,15 @@ def test_orphan_sweep_is_empty_when_every_root_has_a_live_parent():
         _p(620, 500),
     ]
     assert orphan_chrome_pids(procs) == set()
+
+
+# ---- chrome_alarm: the OOM-pileup backstop ----------------------------------
+
+def test_chrome_alarm_fires_only_in_the_danger_zone():
+    """The 2026-07-06 OOM crash came from leaked Chrome windows piling up. The
+    source leak is now force-killed at teardown; this backstop escalates if the
+    live count ever climbs back toward the danger zone."""
+    assert chrome_alarm(30, threshold=90) is False   # normal healthy load
+    assert chrome_alarm(89, threshold=90) is False
+    assert chrome_alarm(90, threshold=90) is True
+    assert chrome_alarm(150, threshold=90) is True    # roughly where it OOM'd

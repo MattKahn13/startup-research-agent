@@ -52,6 +52,11 @@ ORPHAN_SWEEP_EVERY_S = 10 * 60
 LOOP_GUARD_WINDOW_S = 15 * 60
 LOOP_GUARD_MAX = 3
 LOG_TAIL_BYTES = 20_000
+# Leaked Chrome (driver.quit() that silently failed) piling up is what OOM-crashed
+# the run on 2026-07-06. The source leak is now force-killed at teardown, but keep
+# a backstop: warn LOUD if the live run's Chrome count climbs back toward danger,
+# so the next occurrence is a caught escalation, not a hard MemoryError.
+CHROME_ALERT = 90
 
 HEARTBEAT = L.OUT / "supervisor_status.json"
 ESCALATIONS = L.OUT / "supervisor_escalations.jsonl"
@@ -124,6 +129,12 @@ def orphan_chrome_pids(procs) -> set[int]:
                     nxt.append(c["pid"])
         frontier = nxt
     return kill
+
+
+def chrome_alarm(chrome_n: int, threshold: int = CHROME_ALERT) -> bool:
+    """True when the live run's Chrome-process count has climbed into the
+    OOM-risk zone (the leaked-window pileup that crashed the run on 2026-07-06)."""
+    return chrome_n >= threshold
 
 
 def pending_captcha(log_tail: str) -> bool:
@@ -263,6 +274,7 @@ def supervise() -> None:
     stall_flagged = False
     hang_flagged = False
     captcha_flagged = False
+    chrome_flagged = False
 
     while True:
         try:
@@ -354,6 +366,17 @@ def supervise() -> None:
                     sup_log(f"swept {swept} orphaned chrome pids: {sorted(orphans)}")
 
             chrome_n = sum(1 for p in procs if p["name"] == "chrome.exe")
+            if procs and chrome_alarm(chrome_n):
+                if state == "healthy":
+                    state = "chrome-high"
+                if not chrome_flagged:
+                    escalate("chrome-high",
+                             f"{chrome_n} chrome.exe -- leaked-window pileup approaching OOM risk; "
+                             "source leak is force-killed at teardown now, but watch for a repeat")
+                    chrome_flagged = True
+            elif chrome_n < CHROME_ALERT - 15:
+                chrome_flagged = False
+
             write_heartbeat({
                 "state": state, "note": note, "pid": pid, "db_total": db,
                 "log_frozen_s": int(frozen_s), "gemini_wait_s": hang,
