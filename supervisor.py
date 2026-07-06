@@ -131,9 +131,35 @@ def orphan_chrome_pids(procs) -> set[int]:
     return kill
 
 
+def run_chrome_count(procs, root_pid) -> int:
+    """Count chrome.exe processes DESCENDED from the watched run (root_pid is an
+    ancestor). This is the leak signal that matters -- total chrome.exe is
+    polluted by the user's OWN browser (48 of 102 on 2026-07-06 were Matt's, not
+    the run's), which made a total-count alarm cry wolf. A modern Chrome spawns
+    15-25 processes per instance, so the run legitimately runs dozens; what
+    signals a leak is THIS number climbing and staying high over time."""
+    by = {p["pid"]: p for p in procs}
+
+    def descends(pid):
+        seen = set()
+        cur = pid
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            if cur == root_pid:
+                return True
+            cur = by.get(cur, {}).get("ppid")
+        return False
+
+    return sum(1 for p in procs
+               if p["name"] == "chrome.exe" and p["pid"] != root_pid
+               and descends(p["pid"]))
+
+
 def chrome_alarm(chrome_n: int, threshold: int = CHROME_ALERT) -> bool:
-    """True when the live run's Chrome-process count has climbed into the
-    OOM-risk zone (the leaked-window pileup that crashed the run on 2026-07-06)."""
+    """True when the RUN'S OWN Chrome-process count (see run_chrome_count) has
+    climbed into leak/OOM-risk territory -- the pileup that crashed the run on
+    2026-07-06. Fed the run-scoped count, not total chrome.exe, so the user's
+    own browser windows never trip it."""
     return chrome_n >= threshold
 
 
@@ -366,22 +392,24 @@ def supervise() -> None:
                     sup_log(f"swept {swept} orphaned chrome pids: {sorted(orphans)}")
 
             chrome_n = sum(1 for p in procs if p["name"] == "chrome.exe")
-            if procs and chrome_alarm(chrome_n):
+            run_chrome = run_chrome_count(procs, pid) if procs else 0
+            if procs and chrome_alarm(run_chrome):
                 if state == "healthy":
                     state = "chrome-high"
                 if not chrome_flagged:
                     escalate("chrome-high",
-                             f"{chrome_n} chrome.exe -- leaked-window pileup approaching OOM risk; "
-                             "source leak is force-killed at teardown now, but watch for a repeat")
+                             f"{run_chrome} chrome.exe descended from the run (of {chrome_n} total) "
+                             "-- leak/OOM-risk zone; source leak is force-killed at teardown, "
+                             "but this is climbing, investigate for an uncovered driver path")
                     chrome_flagged = True
-            elif chrome_n < CHROME_ALERT - 15:
+            elif run_chrome < CHROME_ALERT - 15:
                 chrome_flagged = False
 
             write_heartbeat({
                 "state": state, "note": note, "pid": pid, "db_total": db,
                 "log_frozen_s": int(frozen_s), "gemini_wait_s": hang,
-                "chrome_procs": chrome_n, "restarts": len(restart_times),
-                "last_sweep_killed": swept,
+                "chrome_procs": chrome_n, "run_chrome": run_chrome,
+                "restarts": len(restart_times), "last_sweep_killed": swept,
             })
         except Exception as e:  # a watchdog must never die on its own tick
             sup_log(f"tick error (continuing): {type(e).__name__}: {e}")

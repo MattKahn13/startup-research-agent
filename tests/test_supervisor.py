@@ -14,6 +14,7 @@ from supervisor import (
     gemini_hang_seconds,
     orphan_chrome_pids,
     chrome_alarm,
+    run_chrome_count,
 )
 
 
@@ -156,3 +157,29 @@ def test_chrome_alarm_fires_only_in_the_danger_zone():
     assert chrome_alarm(89, threshold=90) is False
     assert chrome_alarm(90, threshold=90) is True
     assert chrome_alarm(150, threshold=90) is True    # roughly where it OOM'd
+
+
+def test_run_chrome_count_attributes_chrome_to_the_watched_run_only():
+    """The alarm must count Chrome DESCENDED from the run, not total chrome.exe --
+    on 2026-07-06, 48 of 102 chrome.exe were Matt's own browser, which made a
+    total-count alarm cry wolf. Only windows in the run's process subtree count."""
+    procs = [
+        _p(500, 1, name="python3.13.exe"),   # the watched run
+        _p(600, 500),                         # chrome direct child of the run
+        _p(601, 600),                         # renderer under that chrome
+        _p(602, 601),                         # deeper descendant
+        # Matt's own browser -- a totally separate tree, MUST NOT be counted
+        _p(900, 4, name="explorer.exe"),
+        _p(901, 900),                         # Matt's chrome
+        _p(902, 901),                         # Matt's renderer
+    ]
+    assert run_chrome_count(procs, 500) == 3      # 600, 601, 602 -- not 901/902
+    assert run_chrome_count(procs, 900) == 2      # sanity: Matt's tree has 2
+
+
+def test_run_chrome_count_is_zero_when_the_run_owns_no_chrome():
+    procs = [
+        _p(500, 1, name="python3.13.exe"),
+        _p(901, 900),   # unrelated chrome, parent not in the run's tree
+    ]
+    assert run_chrome_count(procs, 500) == 0
