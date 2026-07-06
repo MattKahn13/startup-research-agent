@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-05 12:24 UTC | HEAD: 4983880 | status-HEAD: bcb6521
+_synced: 2026-07-06 02:46 UTC | HEAD: 5124f7d | status-HEAD: 5124f7d
 
 ## Status
 
@@ -399,6 +399,10 @@ preserved by the sync (never auto-rewritten).
 - `launch_detached.py` -- Spawn the research agent as a fully DETACHED background process on Windows
 - `run_detached.ps1`
 
+**Ops -- supervisor watchdog**
+- `supervisor.py` -- Watchdog supervisor for the detached research agent
+- `launch_supervisor.py` -- Spawn supervisor
+
 **Data layer -- migrate / dedup / analyze**
 - `migrate_to_v2_schema.py` -- Heuristic conversion of the prod startups_db
 - `dedup_records.py` -- Aggressive deduplication of the migrated DB based on canonical company name
@@ -443,6 +447,7 @@ preserved by the sync (never auto-rewritten).
 - `tests/test_parse_json_shape_confusion.py` -- Regression tests for a shape-confusion crash in `_parse_json`
 - `tests/test_gap_fill_driver_resilience.py` -- Regression test for an unhandled Selenium/chromedriver crash inside
 - `tests/test_degradation.py`
+- `tests/test_supervisor.py` -- Tests for the supervisor watchdog's pure decision logic
 
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
 - (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
@@ -455,6 +460,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
 - 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
 - bcb6521 docs(manifest): record clean completion of the overnight run -- 1,278 records, 30 rounds, no crash
 - ddf72f9 docs(manifest): sync + confirm-status
@@ -466,5 +472,4 @@ preserved by the sync (never auto-rewritten).
 - 8ca19e9 fix(planner): guard _parse_json against shape confusion with expect_type
 - 7d1d5cf docs(manifest): record tonight's audit -- gap-fill field mismatch + JSON quote repair, 6 records recovered, PID 26172->27244
 - 8843778 chore: gitignore newer runtime output dirs; add repair_stranded_founders.py
-- db6a82d fix(planner): repair unescaped inner quotes in Gemini JSON before giving up
 <!-- /AUTO -->
