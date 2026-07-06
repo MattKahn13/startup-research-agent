@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 13:56 UTC | HEAD: e5068bc | status-HEAD: e5068bc
+_synced: 2026-07-06 15:03 UTC | HEAD: 5a717ad | status-HEAD: 5a717ad
 
 ## Status
 
@@ -56,6 +56,13 @@ human glance is the only backstop for that -- keeping the machine awake is a Mat
 the pre-spike 84, i.e. windows are being reclaimed, not leaked. Traced every `driver.quit()` site to
 confirm coverage and closed the last bare one (`run_login`, unused by the agent) in `e5068bc`; the
 only `driver.quit()` left in the codebase is inside `hard_quit` itself. DB progressing (1,475).
+**Metric correction (2026-07-06 ~11:00):** the watchdog's `chrome-high` was crying wolf -- it
+alarmed on TOTAL `chrome.exe`, but of 102 windows only 54 belonged to the run; the other 48 were
+Matt's own browser. The run's real Chrome load (~39) is healthy for its ~3 concurrent browsers.
+Fixed: `supervisor.run_chrome_count(procs, pid)` counts only Chrome DESCENDED from the watched run,
+and `chrome-high` alarms on that (heartbeat carries both `run_chrome` and total `chrome_procs`). So
+the leak fix is confirmed working AND the alarm no longer false-fires on the user's browsing.
+Watchdog relaunched (PID 25248) with the corrected metric; 84 tests green.
 
 **2026-07-05 ~22:41 UTC: replaced LLM-polling supervision with a Python watchdog (`supervisor.py`).**
 Babysitting the run by waking Claude every ~30 min to run five process/log commands and print a
@@ -487,6 +494,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 5a717ad fix(supervisor): alarm on run-scoped Chrome, not total -- total was polluted by the user's own 48 browser windows, crying wolf. run_chrome_count attributes chrome.exe to the watched run's subtree; heartbeat carries both. TDD +2.
+- a730f92 docs(manifest): fix validated live (chrome reclaiming, last bare quit closed); sync
 - e5068bc fix(driver): route the last bare driver.quit() (run_login) through hard_quit -- closes the leak pattern completely
 - 33a39c7 docs(manifest): sync + confirm-status
 - 316f1ae fix(driver): force-kill Chrome at teardown -- the quit() leak OOM-crashed the run
@@ -497,6 +506,4 @@ preserved by the sync (never auto-rewritten).
 - ddf72f9 docs(manifest): sync + confirm-status
 - 54a9cd9 fix(degradation): give the ladder a real recovery path instead of a one-way ratchet
 - b9dd612 docs(manifest): sync + confirm-status
-- f2af701 fix(gap-fill): survive a dead search-browser instead of crashing the process
-- cd2319d docs(manifest): record incremental-save gap in the parallel round loop (found during steady-state check)
 <!-- /AUTO -->
