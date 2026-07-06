@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 15:03 UTC | HEAD: 5a717ad | status-HEAD: 5a717ad
+_synced: 2026-07-06 16:06 UTC | HEAD: 40286b9 | status-HEAD: 40286b9
 
 ## Status
 
@@ -63,6 +63,17 @@ Fixed: `supervisor.run_chrome_count(procs, pid)` counts only Chrome DESCENDED fr
 and `chrome-high` alarms on that (heartbeat carries both `run_chrome` and total `chrome_procs`). So
 the leak fix is confirmed working AND the alarm no longer false-fires on the user's browsing.
 Watchdog relaunched (PID 25248) with the corrected metric; 84 tests green.
+**Resume fix (2026-07-06 ~12:00):** the detached launcher never passed `--resume`, so every
+crash/sleep relaunch started FRESH -- empty `visited_urls`, re-planned, round 1 -- re-running Gemini
+extraction on already-visited pages and re-running the same searches (no duplicate DATA: the DB
+dedups records and the page cache blocks re-downloads, but the extraction work was wasted, and a
+fresh start's planning-phase checkpoint save even WIPED the prior `visited_urls`). Fixed: `--resume`
+added to `RESEARCH_ARGV` (one continuous task -> always resume), and `run()`'s checkpoint load
+hardened with `or []`/`or 0` so a partial checkpoint (round=None) resumes cleanly. Watchdog restarted
+(PID 22716) so its relaunches now use `--resume`; from here restarts CONTINUE instead of repeating.
+The visited history up to the 11:32 sleep was already lost to the wipe (unrecoverable), but the page
+cache still prevents re-downloads so the current session only re-extracts; future restarts are
+protected. Current live PIDs: research 18476, watchdog 22716.
 
 **2026-07-05 ~22:41 UTC: replaced LLM-polling supervision with a Python watchdog (`supervisor.py`).**
 Babysitting the run by waking Claude every ~30 min to run five process/log commands and print a
@@ -494,6 +505,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 40286b9 fix(resume): relaunch with --resume so restarts continue instead of repeating
+- 249bc0e docs(manifest): record run-scoped chrome metric correction; sync
 - 5a717ad fix(supervisor): alarm on run-scoped Chrome, not total -- total was polluted by the user's own 48 browser windows, crying wolf. run_chrome_count attributes chrome.exe to the watched run's subtree; heartbeat carries both. TDD +2.
 - a730f92 docs(manifest): fix validated live (chrome reclaiming, last bare quit closed); sync
 - e5068bc fix(driver): route the last bare driver.quit() (run_login) through hard_quit -- closes the leak pattern completely
@@ -504,6 +517,4 @@ preserved by the sync (never auto-rewritten).
 - 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
 - bcb6521 docs(manifest): record clean completion of the overnight run -- 1,278 records, 30 rounds, no crash
 - ddf72f9 docs(manifest): sync + confirm-status
-- 54a9cd9 fix(degradation): give the ladder a real recovery path instead of a one-way ratchet
-- b9dd612 docs(manifest): sync + confirm-status
 <!-- /AUTO -->
