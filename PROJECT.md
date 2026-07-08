@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-06 19:13 UTC | HEAD: 4711ccc | status-HEAD: 4711ccc
+_synced: 2026-07-08 15:17 UTC | HEAD: 4f8b8e2 | status-HEAD: 4f8b8e2
 
 ## Status
 
@@ -63,6 +63,16 @@ Fixed: `supervisor.run_chrome_count(procs, pid)` counts only Chrome DESCENDED fr
 and `chrome-high` alarms on that (heartbeat carries both `run_chrome` and total `chrome_procs`). So
 the leak fix is confirmed working AND the alarm no longer false-fires on the user's browsing.
 Watchdog relaunched (PID 25248) with the corrected metric; 84 tests green.
+**4th sleep-death + recovery (2026-07-08 ~11:12 UTC):** ~21.5h stale gap (machine off/asleep
+overnight), both run 23000's predecessor + its watchdog died cleanly mid-op, no crash. Relaunched
+clean; DB safe at 1,738. Recovery looked slow (~3 min to first log line) -- confirmed benign: Google
+Drive enumerating 6,275 cached page files on the `G:\` mount after a long idle period, not a hang
+(CPU was climbing, process responsive). Also checked the one real (post-fix) `chrome-high` from
+2026-07-07T06:39 (124 run-owned Chrome) -- it never recurred despite 7+ more hours of continued
+operation, same self-correcting pattern as the earlier false-alarm spikes: periodic teardowns
+(Gemini session restarts) eventually reap the pileup. Leak fix is holding; no new code change needed.
+Sleep-deaths are now 4 for 4 -- disabling sleep while plugged in remains the only fix for the
+*offline* gaps themselves (everything else here just makes each recovery lossless and cheap).
 **Resume fix (2026-07-06 ~12:00):** the detached launcher never passed `--resume`, so every
 crash/sleep relaunch started FRESH -- empty `visited_urls`, re-planned, round 1 -- re-running Gemini
 extraction on already-visited pages and re-running the same searches (no duplicate DATA: the DB
@@ -518,6 +528,7 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 4f8b8e2 docs(manifest): record VisitedLog crash-safe resume fix; sync
 - 4711ccc fix(resume): crash-safe visited-URL log so --resume actually carries forward
 - b255ccd docs(manifest): record the --resume fix; sync
 - 40286b9 fix(resume): relaunch with --resume so restarts continue instead of repeating
@@ -529,5 +540,4 @@ preserved by the sync (never auto-rewritten).
 - 316f1ae fix(driver): force-kill Chrome at teardown -- the quit() leak OOM-crashed the run
 - bab8a11 docs(manifest): sync + confirm-status
 - 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
-- 4983880 chore(ops): raise overnight run's round cap 30 -> 500; relaunch PID 36556 from 1278-record DB
 <!-- /AUTO -->
