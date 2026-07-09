@@ -27,9 +27,33 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-08 15:17 UTC | HEAD: 4f8b8e2 | status-HEAD: 4f8b8e2
+_synced: 2026-07-09 04:15 UTC | HEAD: 5b214a8 | status-HEAD: 5b214a8
 
 ## Status
+
+**2026-07-08/09: DATA-QUALITY REMEDIATION -- Prof. Matt Marx (Cornell's VP for Entrepreneurship)
+reviewed the 1,761-record dataset Matt sent and flagged systemic false positives; run PAUSED for
+cleanup.** Marx's examples: Amazon/Chandrayee Basu (she's an Applied Scientist there), Citigroup/Sandy
+Weill (chairman, not founder), BCG/Google (employees), Atkinson Center + other Cornell units, 645
+Ventures + other VCs. **Root cause:** the schema never asserts *founding* -- `affiliation_type` only
+records the Cornell relationship (Alumnus 61%, Student, Faculty...), so ANY Cornellian mentioned near a
+company became its "founder", and the evidence-span gate verifies TEXT (anti-hallucination), not the
+RELATIONSHIP. **Key discriminator = the SOURCE:** ~18% of records come from curated Cornell-startup
+directories (eship.cornell.edu 163, bigredai.org 60, elabstartup.com 58, tech.cornell.edu 47) where
+founding is trustworthy even with thin evidence ("Name '17"); the other ~82% (news 225, business.cornell
+199, wikipedia 101, linkedin 94, instagram 51, alumni profiles) are where employees/execs/donors got
+misrecorded. **Remediation (3 new scripts, committed 5b214a8):** `triage_founders.py` (non-destructive
+bucketing: 512 keep / 962 review / 193 employment / 23 Cornell-entity / 71 investment),
+`adjudicate_founders.py` (source-aware Gemini adjudication -> FOUNDER/EMPLOYEE/EXECUTIVE/INVESTOR/DONOR/
+ATTENDEE/NONCOMPANY; compact `idx:CODE` output to dodge the browser-Gemini truncation on long responses;
+resumable), `apply_adjudication.py` (cleaned DB + auditable rejects log + single Excel deliverable).
+Smoke passed on Marx's exact cases (kept OpenEvidence/Hermeus/Sage/Varda/Burger King, dropped Amazon/
+Citigroup/Amex/BCG/Google/Cisco). Full adjudication of all 1,667 non-rule-dropped records RUNNING.
+**Next:** apply -> cleaned Excel for Marx (meeting 7/28); then harden the extraction prompt + add a
+founding-relationship validation gate BEFORE relaunching (Matt's explicit "fix before relaunch"). Matt's
+own idea for a later phase: cross-reference company names against Secretary-of-State / OpenCorporates
+registration to confirm real external entities. Live PIDs before pause: research 23000, watchdog 34172
+(both intentionally stopped).
 
 **2026-07-06 ~00:03 UTC: the run OOM-crashed -- the `driver.quit()` Chrome leak finally exhausted
 RAM. Root-caused, fixed at the source, and the watchdog auto-recovered it.** The prior run (PID
@@ -528,6 +552,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 5b214a8 feat(cleanup): founder-vs-affiliation remediation after Marx's data-quality review
+- 10ed062 docs(manifest): record 4th sleep-death recovery + confirm chrome-high self-resolves; sync
 - 4f8b8e2 docs(manifest): record VisitedLog crash-safe resume fix; sync
 - 4711ccc fix(resume): crash-safe visited-URL log so --resume actually carries forward
 - b255ccd docs(manifest): record the --resume fix; sync
@@ -538,6 +564,4 @@ preserved by the sync (never auto-rewritten).
 - e5068bc fix(driver): route the last bare driver.quit() (run_login) through hard_quit -- closes the leak pattern completely
 - 33a39c7 docs(manifest): sync + confirm-status
 - 316f1ae fix(driver): force-kill Chrome at teardown -- the quit() leak OOM-crashed the run
-- bab8a11 docs(manifest): sync + confirm-status
-- 5124f7d feat(ops): Python watchdog supervisor -- replaces LLM-polling babysitting
 <!-- /AUTO -->
