@@ -62,6 +62,12 @@ result, and may enqueue children.
 
 - **SEARCH** (discovery) -- seed/query -> candidate `(company, person)` pairs. Backed by the
   existing scraper (DDG/Selenium/Gemini). Its ONLY job is finding leads; it never claims founder.
+- **WIKIDATA_SEED** (discovery, API) -- SPARQL for companies whose founder studied at Cornell ->
+  structured candidates with founder + founded-year. Also serves as an authoritative validator.
+- **EDGAR_SEARCH** (discovery, API) -- Form D + full-text search for filings mentioning "Cornell" ->
+  company + related persons -> candidates.
+- **GRANT_PATENT_SEARCH** (discovery, API) -- SBIR.gov / NIH RePORTER / NSF / USPTO PatentsView for
+  Cornell-affiliated PIs/inventors -> the companies they founded (the deep-tech channel).
 - **VERIFY_COMPANY** (API) -- OpenCorporates / SEC EDGAR / state SoS: is it a real registered
   external entity? Pull officers/founders, incorporation date, DBAs/aliases, jurisdiction. Enqueues
   EXPAND_COMPANY and (per founder) CHECK_CORNELL_TIE.
@@ -117,6 +123,9 @@ AND it is what makes the expansion crawl terminate (the visited-set).
 - **Entity-type** -- drop VCs, foundations, accelerators, Cornell-internal units.
 - **Source-tier routing** -- directory-sourced candidates get a light check; mention-sourced get
   the full battery. Saves most of the verification cost.
+- **Structured-agreement shortcut** -- if two authoritative sources agree on the founding edge
+  (Wikidata + OpenCorporates/EDGAR), mark it verified with NO LLM call. Only genuinely ambiguous
+  edges reach the (fragile) browser-Gemini adjudicator.
 
 ## Reliability, addressed by the shape itself
 
@@ -135,13 +144,59 @@ DuckDB (already the v2 plan): tables for `jobs`, `entities` (companies + people,
 `verification_results`. Queryable; ALTER-friendly during schema iteration; single embedded file.
 The published dataset and the Excel are views/exports.
 
-## API layer (zero-spend, matching Matt's standing constraint)
+## Data sources (all free / free-tier -- matches Matt's zero-spend constraint)
 
-- **OpenCorporates** -- the unifier for company registration + officers (free tier; NY/DE/etc.).
-- **SEC EDGAR** -- free; public + venture-funded companies, officers, filings.
-- **State SoS** -- fragmented; start with OpenCorporates and add specific states (NY) as needed.
-- **LLM** -- Gemini-web via the queue now (short compact prompts, already reliable). An LLM API for
-  adjudication is a drop-in later if desired -- the door Matt opened.
+Grouped by the role they play. Each is a worker behind the queue.
+
+**Structured seed + validator (highest leverage):**
+- **Wikidata SPARQL** -- encodes the exact edges natively: `educated at (P69) = Cornell University`
+  + `founded by (P112)`. One free query returns companies whose founder studied at Cornell, with
+  founder + founded-year, structured. Used BOTH as a high-precision seed AND as a validator (if
+  Wikidata already asserts "X founded Y", that's authoritative corroboration). No key.
+
+**Real-company / entity-type (verification):**
+- **OpenCorporates** -- registration + officers + DBAs (free tier; NY/DE/etc.); the SoS unifier.
+- **SEC EDGAR** -- free full API. **Form D** private-placement filings list the company + its
+  "related persons" (founders/execs) with addresses; EDGAR full-text search finds filings mentioning
+  "Cornell." Authoritative for funded startups -- a government source Marx cannot dispute.
+- **GLEIF (Legal Entity Identifier)** -- free global registry; confirms a real registered entity.
+- **ProPublica Nonprofit Explorer** -- free; used in REVERSE to *exclude* foundations/nonprofits.
+
+**Deep-tech discovery channel (a whole tier the news/directory scrape misses):**
+- **SBIR.gov API** + **NIH RePORTER** + **NSF Award Search** -- free; SBIR/STTR grants and research
+  awards name the company + the PI. Cornell-affiliated PIs who founded a grant-funded startup.
+- **USPTO PatentsView API** -- free; inventors + assignees. Cornell inventors -> the companies they
+  founded to commercialize. Also Cornell-as-assignee -> licensed-tech spinouts.
+- Decision (per Matt): make this a **first-class discovery source**, not a later add.
+
+**Cornell-tie anchor + person expansion:**
+- **ORCID** -- free; researcher education + employment + works (faculty/researcher founders).
+- **GitHub API** -- free; tech founders with "Cornell" in bio + their company.
+- **LinkedIn** (existing auth scrape) -- founder titles + "Cornell" education; high-signal, anti-bot.
+
+**LLM:** Gemini-web via the queue now (short compact prompts, already reliable). An LLM API for
+adjudication is a drop-in later -- but note the structured-agreement shortcut below removes the LLM
+from the path entirely for a large fraction of records.
+
+## Graph-native features (what the architecture uniquely enables)
+
+- **Confidence score + provenance chain, not binary keep/drop.** Every founded-by edge carries a
+  score aggregating source-tier, independent-corroboration count, API confirmation, and Cornell-tie
+  strength -- plus its full evidence chain (which sources, which API hits, which adjudication). The
+  published record is defensible on its face: it says *why* it's there and how sure we are.
+- **Structured-agreement shortcut (reliability + cost win).** When two authoritative sources agree
+  (e.g. Wikidata asserts "X founded Y" AND OpenCorporates lists X as an officer of Y), mark the edge
+  verified WITHOUT an LLM call. This removes the fragile browser-Gemini step for a large fraction of
+  records -- solving reliability by *not needing* the flaky path, not just hardening it.
+- **Contradiction detection.** When sources disagree on the founder (SoS says Jane, scrape says
+  John), flag a contradiction -> needs_human, instead of silently picking wrong. This is exactly the
+  Ava-Labs bug, turned into a caught signal.
+- **Queryable rejects = an instant defense.** The rejects log answers Marx's "what about Cisco?"
+  with "Lew Tucker, CTO, EXECUTIVE -- excluded, here's the source." Every future challenge is a
+  lookup, not a re-investigation.
+- **Repeat-founder mining.** The expansion crawl surfaces Cornellians who founded 3+ companies;
+  those nodes are high-yield -- prioritize expanding them. Also reveals founder teams/clusters,
+  genuinely useful data for Marx's actual role.
 
 ## Migration of the existing 1,761
 
