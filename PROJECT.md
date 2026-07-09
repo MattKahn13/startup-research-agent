@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-09 20:27 UTC | HEAD: 43affb6 | status-HEAD: e4993df
+_synced: 2026-07-09 20:50 UTC | HEAD: 42cadf3 | status-HEAD: 42cadf3
 
 ## Status
 
@@ -72,6 +72,18 @@ Reliability handled by the shape (discovery decoupled from Gemini; queue survive
 check on a free API -- OpenCorporates/EDGAR). AWAITING Matt's spec review before writing the
 implementation plan; Phase 1 = the Marx deliverable (UNCLEAR source-recovery + real-company check,
 batch, no perpetual scrape -- respects the current "temporarily stop scrape"). Scrape stays stopped.
+**Spec expanded + PLAN written (2026-07-09, 42cadf3, pushed):** Matt said "fold in all" the creative
+additions -- spec now includes Wikidata SPARQL (structured Cornell-founder seed+validator), SEC EDGAR
+Form D + full-text, the SBIR/NIH/NSF/USPTO deep-tech discovery channel, GLEIF + ProPublica for
+entity-type, and graph-native features (confidence score + provenance chain, contradiction detection,
+structured-agreement shortcut = skip the LLM when authoritative sources agree, queryable rejects,
+repeat-founder mining). Plan: `docs/superpowers/plans/2026-07-09-founder-graph-verification.md`.
+**Phase 1 fully TDD'd** (new `verify/` package: confidence, contradiction, publish gate, real_company,
+wikidata, rejects_query; `recover_unclear.py`; `build_deliverable.py` -> confidence-scored
+`cornellian_founders_verified.xlsx`) -- batch, no perpetual scrape, produces the Marx deliverable.
+**Phases 2-5 roadmap** (durable queue + DuckDB store + entity resolution; discovery rewire to
+candidate-only; expansion crawl + SBIR/patent discovery; extraction hardening + relaunch), each its
+own future plan. AWAITING Matt's "go" to execute Phase 1 inline; scrape stays stopped until then.
 
 **2026-07-06 ~00:03 UTC: the run OOM-crashed -- the `driver.quit()` Chrome leak finally exhausted
 RAM. Root-caused, fixed at the source, and the watchdog auto-recovered it.** The prior run (PID
@@ -493,12 +505,87 @@ preserved by the sync (never auto-rewritten).
 ## Artifact index
 
 <!-- AUTO:index -->
-(no artifacts matched -- check the scan config)
+**Core pipeline (the agent)**
+- `startup_researcher.py` -- startup_researcher
+- `gemini_tool.py` -- gemini_tool
+- `schema.py`
+- `evidence.py`
+- `metrics.py`
+- `degradation.py`
+- `retry_policy.py` -- Transient failure -- safe to retry
+- `url_canonical.py`
+
+**Ops -- detached overnight launch**
+- `launch_detached.py` -- Spawn the research agent as a fully DETACHED background process on Windows
+- `run_detached.ps1`
+
+**Ops -- supervisor watchdog**
+- `supervisor.py` -- Watchdog supervisor for the detached research agent
+- `launch_supervisor.py` -- Spawn supervisor
+
+**Data layer -- migrate / dedup / analyze**
+- `migrate_to_v2_schema.py` -- Heuristic conversion of the prod startups_db
+- `dedup_records.py` -- Aggressive deduplication of the migrated DB based on canonical company name
+- `analyze_ecosystem.py` -- Ecosystem analysis from the migrated Cornell-startup DB
+- `export_csv.py` -- Export the deduped (or enriched) DB to a flat CSV for spreadsheet review
+- `export_network.py` -- Export the Cornell startup network as a graph:
+- `reextract_all.py` -- One-shot re-extraction of every record in startups_db
+- `repair_stranded_founders.py` -- One-off data repair: promote a record's legacy 'founders' value into
+
+**Enrichment -- wikipedia + linkedin**
+- `enrich_wikipedia.py` -- Enrich the deduped Cornell-startup DB with Wikipedia data: headquarters,
+- `discover_via_wikipedia_categories.py` -- Discover candidate Cornell-affiliated companies via Wikipedia category traversal
+- `linkedin_login.py` -- Interactive LinkedIn login: opens a visible Chrome window, navigates to the
+- `parse_linkedin_auth.py` -- Authenticated LinkedIn probe + JSON-LD/voyager parser
+
+**Probes (empirical findings)**
+- `probe_headed_minimized.py` -- Empirical test of the wiki claim:
+- `probe_linkedin.py` -- Empirical probe: what does LinkedIn return to a logged-out client?
+- `probe_linkedin_auth.py` -- Same target set as probe_linkedin
+- `probe_gemini.py` -- Probe harness: ask Gemini to extract records from a known cached page,
+
+**Specs (design)**
+- `docs/superpowers/specs/2026-07-09-founder-graph-verification-architecture-design.md` -- Founder Graph: candidate -> verify -> publish, with an expansion crawl
+- `docs/superpowers/specs/2026-06-07-research-agent-v2-design.md` -- Research Agent v2 -- Design
+- `docs/superpowers/specs/2026-06-05-hardening-pass-design.md` -- Startup Research Agent -- Hardening Pass
+
+**Plans (implementation)**
+- `docs/superpowers/plans/2026-07-09-founder-graph-verification.md` -- Founder Graph Verification -- Implementation Plan
+- `docs/superpowers/plans/2026-06-07-research-agent-v2-implementation.md` -- Research Agent v2 -- Implementation Plan
+- `docs/superpowers/plans/2026-06-05-hardening-pass-implementation.md` -- Startup Research Agent -- Hardening Pass Implementation Plan
+
+**Reports & handoffs**
+- `OVERNIGHT_REPORT.md` -- Overnight Run -- 2026-06-06 → 2026-06-07
+- `HANDOFF.md` -- Startup Researcher — Conversation Handoff
+- `BLOCKED_NEEDS_HUMAN.md` -- Tasks Requiring Local Browser Execution
+- `cornell-startups-tasks.md` -- Cornell Alumni + Startups Research Tasks
+
+**Tests**
+- `tests/test_parse_json.py` -- Gemini's rendered code-block language label ('JSON') leaks into the
+- `tests/test_schema.py`
+- `tests/test_db_upsert.py` -- The live flow passes DICTS (StartupRecord
+- `tests/test_gap_fill_field_consistency.py` -- Regression tests for the founders / cornellian_founder field-mismatch bug
+- `tests/test_json_quote_repair.py` -- Regression tests for the unescaped-inner-quotes JSON repair
+- `tests/test_parse_json_shape_confusion.py` -- Regression tests for a shape-confusion crash in `_parse_json`
+- `tests/test_gap_fill_driver_resilience.py` -- Regression test for an unhandled Selenium/chromedriver crash inside
+- `tests/test_degradation.py`
+- `tests/test_supervisor.py` -- Tests for the supervisor watchdog's pure decision logic
+- `tests/test_hard_quit.py` -- Tests for the browser-process force-kill on driver teardown
+- `tests/test_visited_log.py` -- Tests for VisitedLog -- crash-safe visited-URL persistence
+
+- (external) ~/.claude/web-agent-skills/wiki/site-profiles/gemini-web.md | Gemini-web scraping profile -- 50KB prompt cliff, anonymous mode, the JSON-label-prefix lesson (2026-06-11)
+- (external) ~/.claude/web-agent-skills/wiki/site-profiles/linkedin.md | LinkedIn profile -- urllib vs Selenium rungs, auth-mode voyager JSON parser, the headed-fixes-the-throttle correction
+- (external) ~/.claude/web-agent-skills/wiki/anti-patterns/headless-default.md | why headed-minimized is the binding default; empirical probe 2026-06-07
+- (external) ~/.claude/web-agent-skills/wiki/primitives/captcha-handoff.md | un-minimize-then-handoff pattern for interactive challenges
+- (external) ~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok
+- (external) https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass
 <!-- /AUTO -->
 
 ## Recent log
 
 <!-- AUTO:log -->
+- 42cadf3 plan: founder-graph verification Phase 1 (TDD) + Phases 2-5 roadmap
+- ff05517 spec: fold in Wikidata/EDGAR/SBIR+patent sources + confidence/provenance/contradiction/structured-agreement features
 - 43affb6 docs(manifest): record adjudication results + architecture spec; sync
 - e4993df spec: founder-graph candidate->verify->publish architecture (post-Marx re-architecture)
 - 31eae2c docs(manifest): record Marx data-quality remediation + adjudication; sync
@@ -509,6 +596,4 @@ preserved by the sync (never auto-rewritten).
 - b255ccd docs(manifest): record the --resume fix; sync
 - 40286b9 fix(resume): relaunch with --resume so restarts continue instead of repeating
 - 249bc0e docs(manifest): record run-scoped chrome metric correction; sync
-- 5a717ad fix(supervisor): alarm on run-scoped Chrome, not total -- total was polluted by the user's own 48 browser windows, crying wolf. run_chrome_count attributes chrome.exe to the watched run's subtree; heartbeat carries both. TDD +2.
-- a730f92 docs(manifest): fix validated live (chrome reclaiming, last bare quit closed); sync
 <!-- /AUTO -->
