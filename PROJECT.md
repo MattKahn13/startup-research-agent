@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-09 20:50 UTC | HEAD: 42cadf3 | status-HEAD: 42cadf3
+_synced: 2026-07-10 05:29 UTC | HEAD: 16de4b3 | status-HEAD: 16de4b3
 
 ## Status
 
@@ -584,6 +584,10 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 16de4b3 feat(verify): recovery re-adjudication + deliverable builder; drop size-based REMOVE rule (Phase 1 tasks 7-8 + extraction hardening)
+- 9a633ba feat(verify): free-API modules -- OpenCorporates real-company/entity-type + Wikidata Cornell-founder seed/validator (Phase 1 tasks 4-5)
+- 9f69e3b feat(verify): pure-logic gate -- confidence+provenance, contradiction, publish decision, rejects-query (Phase 1 tasks 1-3,6)
+- e57017f docs(manifest): record spec expansion + Phase 1 plan; sync
 - 42cadf3 plan: founder-graph verification Phase 1 (TDD) + Phases 2-5 roadmap
 - ff05517 spec: fold in Wikidata/EDGAR/SBIR+patent sources + confidence/provenance/contradiction/structured-agreement features
 - 43affb6 docs(manifest): record adjudication results + architecture spec; sync
@@ -592,8 +596,4 @@ preserved by the sync (never auto-rewritten).
 - 5b214a8 feat(cleanup): founder-vs-affiliation remediation after Marx's data-quality review
 - 10ed062 docs(manifest): record 4th sleep-death recovery + confirm chrome-high self-resolves; sync
 - 4f8b8e2 docs(manifest): record VisitedLog crash-safe resume fix; sync
-- 4711ccc fix(resume): crash-safe visited-URL log so --resume actually carries forward
-- b255ccd docs(manifest): record the --resume fix; sync
-- 40286b9 fix(resume): relaunch with --resume so restarts continue instead of repeating
-- 249bc0e docs(manifest): record run-scoped chrome metric correction; sync
 <!-- /AUTO -->
