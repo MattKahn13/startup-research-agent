@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-10 05:43 UTC | HEAD: 11beb0a | status-HEAD: 11beb0a
+_synced: 2026-07-10 16:51 UTC | HEAD: 1d1aa9c | status-HEAD: 1d1aa9c
 
 ## Status
 
@@ -102,6 +102,20 @@ unrelated placeholder; force-pushed local main over it (authorized) -- remote no
 project.** Not run (scrape still stopped): the browser-Gemini recovery pass (`recover_unclear.py`) that
 would promote real founders out of needs_human, and the unbuilt EDGAR/SBIR/patent corroboration
 (Phases 3-4). Decision pending from Matt: run recovery (needs the browser) or send the 230 to Marx as-is.
+**2026-07-10 HARDENING (pushed through the entity-note commit).** (1) **No pop-up console windows
+when detached:** every child console call (supervisor's per-tick powershell snapshot, taskkill, the
+reg/wmic chrome-version detect, the powershell clipboard write) now passes CREATE_NO_WINDOW -- when the
+parent runs detached (no console), those otherwise flash a fresh window each time; `capture_output` does
+NOT suppress it, only the flag does. chromedriver's console was already hidden by selenium 4.41
+(SW_HIDE) and the top-level launchers already used CREATE_NO_WINDOW. Regression test
+`tests/test_no_console_window.py` locks the flag in. (2) **Entity-verification is now NOTED, never
+disqualifying** (Matt's instruction): `build_deliverable.entity_status()` cross-references
+OpenCorporates + Wikidata and records `entity_verified` True/False/None with a human-readable note; a
+None ("couldn't confirm") becomes "entity UNVERIFIED -- not disqualifying" and never blocks a row (a
+real company can exist without appearing in any registry we reach). New "Entity Note" column on the
+verified sheet. First run: 11 confirmed (Wikidata) / 219 unverified of 230 -- thin because
+OpenCorporates' anon tier is now 401; a working registry (SEC EDGAR full-text, GLEIF, or an OC key)
+would flip more rows to confirmed. 119 tests green.
 
 **2026-07-06 ~00:03 UTC: the run OOM-crashed -- the `driver.quit()` Chrome leak finally exhausted
 RAM. Root-caused, fixed at the source, and the watchdog auto-recovered it.** The prior run (PID
@@ -602,6 +616,9 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 1d1aa9c feat(verify): note entity-verification result on every row (never disqualify on unprovable entity)
+- de13f78 fix(win): suppress pop-up console windows for child processes when detached
+- 92693e8 docs(manifest): record Phase 1 build + first Marx deliverable (230/1022/552); OpenCorporates 401 breaker; fund-rule fix
 - 11beb0a fix(verify): OpenCorporates circuit breaker (anon tier now 401) + tighten fund name-rule
 - db03161 docs(manifest): sync -- Phase 1 verify/ package complete (110 tests green)
 - 16de4b3 feat(verify): recovery re-adjudication + deliverable builder; drop size-based REMOVE rule (Phase 1 tasks 7-8 + extraction hardening)
@@ -611,7 +628,4 @@ preserved by the sync (never auto-rewritten).
 - 42cadf3 plan: founder-graph verification Phase 1 (TDD) + Phases 2-5 roadmap
 - ff05517 spec: fold in Wikidata/EDGAR/SBIR+patent sources + confidence/provenance/contradiction/structured-agreement features
 - 43affb6 docs(manifest): record adjudication results + architecture spec; sync
-- e4993df spec: founder-graph candidate->verify->publish architecture (post-Marx re-architecture)
-- 31eae2c docs(manifest): record Marx data-quality remediation + adjudication; sync
-- 5b214a8 feat(cleanup): founder-vs-affiliation remediation after Marx's data-quality review
 <!-- /AUTO -->
