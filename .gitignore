@@ -21,3 +21,6 @@ merge_conflicts.jsonl
 reextract_*.jsonl
 startups_db_v2.json
 gemini-code-*.py
+# Excel deliverables + lock files (data artifacts, kept out of the repo)
+~$*.xlsx
+Cornell_Cornellian_Founders.xlsx

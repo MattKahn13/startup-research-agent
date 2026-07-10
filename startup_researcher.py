@@ -3440,20 +3440,28 @@ def _gemini_verify_batch(
         The following {len(batch)} records are AMBIGUOUS — they may or may not
         genuinely belong in this directory. Review each one and decide:
 
-        KEEP if:
-          - The company was founded by or spun out of the target institution
-          - The company licenses technology from the institution
-          - The company was created in an institutional incubator/accelerator
-          - There is reasonable evidence of genuine affiliation
+        COMPANY SIZE IS IRRELEVANT. A Fortune 500 / Big Tech / large established
+        company that was FOUNDED or CO-FOUNDED by a Cornellian, or is led by one
+        in a significant role (CEO, CTO, president, etc.), is exactly in scope --
+        KEEP it. The research goal is "a Cornellian founder / significant
+        role-holder," not "small early-stage startup." Do not remove anything for
+        being big, old, or public.
 
-        REMOVE if:
-          - This is a large/established company (Fortune 500, Big Tech, etc.)
-            that is NOT a startup, even if an alum works there
-          - This is a venture fund, angel group, accelerator PROGRAM, or
-            university department — not a startup
-          - The "affiliation" is just that an employee once attended the school
+        KEEP if:
+          - A Cornellian (alumnus, faculty, student, postdoc, or researcher) is a
+            founder, co-founder, CEO/CTO, or other significant leadership/role-holder
+            of the company -- REGARDLESS of the company's size, age, or valuation
+          - The company was founded by, spun out of, or licenses technology from the
+            institution, or was created in an institutional incubator/accelerator
+          - There is reasonable evidence of genuine Cornellian affiliation
+
+        REMOVE ONLY if:
+          - This is NOT an operating company at all -- a venture fund, angel group,
+            accelerator PROGRAM, university department, course, or hackathon
+          - The ONLY Cornell tie is a rank-and-file employee who happens to have
+            attended Cornell (no founder / co-founder / significant leadership role)
           - This looks like a placeholder or generic description, not a real company
-          - There is NO credible evidence of genuine institutional affiliation
+          - There is NO credible evidence of any genuine Cornellian founder/leader
 
         RECORDS TO REVIEW:
         {batch_summary}
