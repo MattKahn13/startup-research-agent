@@ -27,7 +27,7 @@ external:
   - "~/.claude/web-agent-skills/wiki/anti-patterns/silent-failure.md | the cookie-filter + no-op-login footguns; valid-data-discarded-while-pipeline-reports-ok"
   - "https://github.com/MattKahn13/startup-research-agent | remote; active work is on branch hardening-pass"
 -->
-_synced: 2026-07-10 05:29 UTC | HEAD: 16de4b3 | status-HEAD: 16de4b3
+_synced: 2026-07-10 05:43 UTC | HEAD: 11beb0a | status-HEAD: 11beb0a
 
 ## Status
 
@@ -84,6 +84,24 @@ wikidata, rejects_query; `recover_unclear.py`; `build_deliverable.py` -> confide
 **Phases 2-5 roadmap** (durable queue + DuckDB store + entity resolution; discovery rewire to
 candidate-only; expansion crawl + SBIR/patent discovery; extraction hardening + relaunch), each its
 own future plan. AWAITING Matt's "go" to execute Phase 1 inline; scrape stays stopped until then.
+**PHASE 1 BUILT + DELIVERABLE GENERATED (2026-07-10, pushed through 11beb0a).** All 8 Phase-1 tasks
+done under TDD (112 tests green): the `verify/` package (confidence+provenance, contradiction, publish
+gate, real_company, wikidata, rejects_query), `recover_unclear.py`, `build_deliverable.py`. Also an
+extraction-hardening fix: `_gemini_verify_batch` no longer carries the Fortune-500/Big-Tech size-based
+REMOVE rule that contradicted the size-agnostic capture criterion (regression test locks it). **First
+full deliverable run over all 1,804 records: 230 verified / 1,022 needs_human / 552 rejected.** Marx's
+exact false-positives (Amazon, Citigroup, BCG, Google, 645 Ventures, Amex, Cisco, Atkinson) ALL
+correctly rejected -- none in verified. Two field discoveries during the run: (1) **OpenCorporates'
+anonymous tier now returns 401** (API key required) -- added a circuit breaker so the batch stops after
+5 straight failures and degrades to the name-rules instead of firing 1,804 doomed calls; (2) 5 PE/fund
+entities (Vista/NRDC Equity Partners, Catylyst Capital, Security Capital Group) leaked into verified --
+tightened `_FUND` to catch "equity partners" + standalone "capital"; leak now zero. Deliverables:
+`startup_output_overnight/cornellian_founders_verified.xlsx` + `founders_needs_human.json` +
+`founders_rejected.json` (all under the gitignored output dir). **The GitHub remote was a stale
+unrelated placeholder; force-pushed local main over it (authorized) -- remote now mirrors the full
+project.** Not run (scrape still stopped): the browser-Gemini recovery pass (`recover_unclear.py`) that
+would promote real founders out of needs_human, and the unbuilt EDGAR/SBIR/patent corroboration
+(Phases 3-4). Decision pending from Matt: run recovery (needs the browser) or send the 230 to Marx as-is.
 
 **2026-07-06 ~00:03 UTC: the run OOM-crashed -- the `driver.quit()` Chrome leak finally exhausted
 RAM. Root-caused, fixed at the source, and the watchdog auto-recovered it.** The prior run (PID
@@ -584,6 +602,8 @@ preserved by the sync (never auto-rewritten).
 ## Recent log
 
 <!-- AUTO:log -->
+- 11beb0a fix(verify): OpenCorporates circuit breaker (anon tier now 401) + tighten fund name-rule
+- db03161 docs(manifest): sync -- Phase 1 verify/ package complete (110 tests green)
 - 16de4b3 feat(verify): recovery re-adjudication + deliverable builder; drop size-based REMOVE rule (Phase 1 tasks 7-8 + extraction hardening)
 - 9a633ba feat(verify): free-API modules -- OpenCorporates real-company/entity-type + Wikidata Cornell-founder seed/validator (Phase 1 tasks 4-5)
 - 9f69e3b feat(verify): pure-logic gate -- confidence+provenance, contradiction, publish decision, rejects-query (Phase 1 tasks 1-3,6)
@@ -594,6 +614,4 @@ preserved by the sync (never auto-rewritten).
 - e4993df spec: founder-graph candidate->verify->publish architecture (post-Marx re-architecture)
 - 31eae2c docs(manifest): record Marx data-quality remediation + adjudication; sync
 - 5b214a8 feat(cleanup): founder-vs-affiliation remediation after Marx's data-quality review
-- 10ed062 docs(manifest): record 4th sleep-death recovery + confirm chrome-high self-resolves; sync
-- 4f8b8e2 docs(manifest): record VisitedLog crash-safe resume fix; sync
 <!-- /AUTO -->
