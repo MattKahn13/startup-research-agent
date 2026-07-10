@@ -35,6 +35,28 @@ def _cornell_tie(record):
     return "strong" if (record.get("affiliation_type") or "").strip() else "weak"
 
 
+def entity_status(company_check, wikidata_confirms):
+    """Cross-reference the company against entity-verification sources and NOTE the
+    result. Inability to prove the entity is recorded, never used to disqualify --
+    a real company can exist without appearing in any registry we can reach. Returns
+    {verified: True|False|None, note: str}:
+      True  -- an external source confirms the entity exists
+      False -- a name-rule positively flagged it as a non-company (fund/unit/etc.)
+      None  -- we could not confirm it; a note is made, and it is NOT disqualifying
+    """
+    real = company_check.get("company_real")
+    src = company_check.get("source") or "registry"
+    et = company_check.get("entity_type") or "unknown"
+    if real is True:
+        return {"verified": True, "note": f"entity confirmed ({src})"}
+    if wikidata_confirms:
+        return {"verified": True, "note": "entity confirmed (wikidata)"}
+    if real is False:
+        return {"verified": False, "note": f"flagged non-company ({et}, name-rule)"}
+    return {"verified": None,
+            "note": "entity UNVERIFIED -- no registry/Wikidata match (not disqualifying)"}
+
+
 def merge_signals(record, adj_verdict, recovery_verdict, wikidata_confirms,
                   company_check, source_tier):
     verdict = recovery_verdict or adj_verdict  # recovery overrides UNCLEAR
@@ -49,8 +71,10 @@ def merge_signals(record, adj_verdict, recovery_verdict, wikidata_confirms,
     d = decide(llm_verdict=verdict, company_real=company_check.get("company_real"),
                entity_type=company_check.get("entity_type"), cornell_tie=tie,
                confidence=s["confidence"], contradiction=contradiction)
+    es = entity_status(company_check, wikidata_confirms)
     return {**record, "state": d["state"], "reason": d["reason"],
-            "confidence": s["confidence"], "provenance": s["provenance"]}
+            "confidence": s["confidence"], "provenance": s["provenance"],
+            "entity_verified": es["verified"], "entity_note": es["note"]}
 
 
 def _load_jsonl_verdicts(path):
@@ -105,7 +129,7 @@ def main():
         x["source_domain"] = _domain(x.get("proof_url"))
 
     aa.EXCEL_COLS = ["company_name", "cornellian_founder", "affiliation_type",
-                     "confidence_provenance", "proof_url", "source_domain",
+                     "confidence_provenance", "entity_note", "proof_url", "source_domain",
                      "affiliation_evidence"]
     xlsx = aa.write_excel(verified, OUT / "cornellian_founders_verified.xlsx")
     (OUT / "founders_needs_human.json").write_text(
