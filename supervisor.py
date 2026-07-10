@@ -43,6 +43,11 @@ from pathlib import Path
 
 import launch_detached as L
 
+# The supervisor runs detached (no console -- see launch_supervisor.py). Its child
+# console programs (powershell every tick, taskkill) would each flash a fresh
+# console window without this. CREATE_NO_WINDOW suppresses it; 0 on non-Windows.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # ---- config -----------------------------------------------------------------
 
 TICK_S = 60
@@ -237,7 +242,7 @@ def snapshot_processes() -> list[dict]:
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, creationflags=_NO_WINDOW,
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return []
@@ -259,7 +264,7 @@ def kill_pids(pids) -> int:
     for p in pids:
         try:
             subprocess.run(["taskkill", "/F", "/PID", str(p)],
-                           capture_output=True, timeout=15)
+                           capture_output=True, timeout=15, creationflags=_NO_WINDOW)
             killed += 1
         except (subprocess.SubprocessError, OSError):
             pass

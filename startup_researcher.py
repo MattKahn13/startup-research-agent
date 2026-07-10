@@ -930,9 +930,11 @@ def _detect_chrome_major() -> Optional[int]:
         ],
         "Darwin": [["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--version"]],
     }.get(plat, [["google-chrome", "--version"], ["chromium-browser", "--version"]])
+    no_window = getattr(sp, "CREATE_NO_WINDOW", 0)  # suppress console flash when detached
     for cmd in cmds:
         try:
-            out = sp.check_output(cmd, stderr=sp.DEVNULL, timeout=10).decode()
+            out = sp.check_output(cmd, stderr=sp.DEVNULL, timeout=10,
+                                  creationflags=no_window).decode()
             m = re.search(r"(\d+)\.\d+\.\d+", out)
             if m:
                 return int(m.group(1))

@@ -94,6 +94,11 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+# When this process runs detached (no console of its own -- see launch_detached.py),
+# any child console program (taskkill, reg, powershell) would otherwise pop a fresh
+# console window. CREATE_NO_WINDOW suppresses it. 0 on non-Windows.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 from selenium.common.exceptions import (
     TimeoutException,
     WebDriverException,
@@ -859,7 +864,7 @@ def _detect_chrome_major() -> Optional[int]:
     for cmd in cmds:
         try:
             out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
-                                          timeout=10).decode()
+                                          timeout=10, creationflags=_NO_WINDOW).decode()
             match = _re.search(r"(\d+)\.\d+\.\d+", out)
             if match:
                 ver = int(match.group(1))
@@ -945,7 +950,7 @@ def _force_kill_pids(pids) -> None:
     for pid in pids:
         try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                           capture_output=True, timeout=15)
+                           capture_output=True, timeout=15, creationflags=_NO_WINDOW)
         except Exception:
             pass
 
@@ -1383,7 +1388,7 @@ def _send_prompt_inner(driver: uc.Chrome, prompt: str, files: list[str] = None) 
                     subprocess.run(
                         ['powershell', '-command',
                          f"Get-Content -Path '{temp_file}' -Encoding UTF8 -Raw | Set-Clipboard"],
-                        capture_output=True, timeout=15
+                        capture_output=True, timeout=15, creationflags=_NO_WINDOW
                     )
                 finally:
                     try:
